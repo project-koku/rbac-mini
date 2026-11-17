@@ -14,7 +14,8 @@ contract as the operator `manager` / `wait-for` helpers:
 Ordinary `make build` / `make test-sqlite` omit `nativefips` and work with
 upstream Go. Those binaries are not the release FIPS artifacts.
 
-`go 1.26.5` in [go.mod](../go.mod) matches the operator's UBI go-toolset so
+`go 1.26.5` (+ `toolchain go1.26.11`) in [go.mod](../go.mod) matches the
+operator's UBI go-toolset / vuln floor so
 the Mini binary can be built inside the operator Dockerfile without a second
 toolchain. See the operator's
 [fips.md](https://github.com/project-koku/koku-service-operator/blob/main/docs/development/fips.md).

@@ -90,17 +90,19 @@ internal/testdb/  per-test isolated DBs (SQLite :memory: or fresh PG database)
 * [ERD](doc/ERD.md) — mermaid ER diagram of the 10-table schema
 * [OpenAPI subset](doc/openapi.v1-subset.json) (+ [live ReDoc](https://redocly.github.io/redoc/?url=https://raw.githubusercontent.com/martinpovolny/rbac-mini/master/doc/openapi.v1-subset.json))
 * [Findings](doc/FINDINGS.md) — investigation notes (Celery, cross-account, entrypoint, operator contract, Keycloak sync, seeds, UI surface)
-* [Operator swap](doc/OPERATOR-SWAP.md) — `spec.rbac.backend` plan and rollout deltas
-* [Live-cluster test](doc/LIVE-CLUSTER-TEST.md) — CRC runbook, evidence, rollback caveats
-* [Load test](doc/LOADTEST.md) — `GET /access/` critical path, rbac-go vs Django + Valkey, method and results
+* [Operator swap](doc/OPERATOR-SWAP.md) — embed model (`backend: go` → operator image) and rollout deltas
+* [Live-cluster test](doc/LIVE-CLUSTER-TEST.md) — CRC runbook (historical + embed note), evidence, rollback caveats
+* [Load test](doc/LOADTEST.md) — `GET /access/` critical path, rbac-mini vs Django + Valkey, method and results
 
 ## Deploying
 
 Via `koku-service-operator` with `spec.rbac.backend: go`
-(see [doc/OPERATOR-SWAP.md](doc/OPERATOR-SWAP.md)): one field switches the rendered Deployment,
-migration Job, and Keycloak-sync CronJob; worker and seed ConfigMaps are
-dropped. Live-cluster verification (CRC, incl. koku end-to-end and rollback)
-is recorded in [doc/LIVE-CLUSTER-TEST.md](doc/LIVE-CLUSTER-TEST.md).
+(see [doc/OPERATOR-SWAP.md](doc/OPERATOR-SWAP.md) and the operator guide
+[rbac-backend-go.md](https://github.com/project-koku/koku-service-operator/blob/main/docs/development/rbac-backend-go.md)):
+the operator image embeds `/usr/local/bin/rbac-mini` (COST-8610). One field
+switches the rendered Deployment, migration Job, and Keycloak-sync CronJob;
+worker and seed ConfigMaps are dropped; `spec.rbac.image` is ignored for go.
+Live-cluster verification notes are in [doc/LIVE-CLUSTER-TEST.md](doc/LIVE-CLUSTER-TEST.md).
 
 ## License
 

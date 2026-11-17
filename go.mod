@@ -2,6 +2,8 @@ module rbac-go
 
 go 1.26.5
 
+toolchain go1.26.11
+
 require (
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/prometheus/client_golang v1.25.0

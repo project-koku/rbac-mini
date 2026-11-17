@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -72,9 +73,14 @@ func envBool(key string, def bool) bool {
 // resolveDatabaseURL prefers DATABASE_URL, else assembles postgres:// from
 // the operator-injected DATABASE_{HOST,PORT,NAME,USER,PASSWORD} (SPEC §5),
 // else falls back to a local dev SQLite file.
+//
+// When assembling from DATABASE_*, sslmode comes from PGSSLMODE (operator
+// injects spec.database.sslMode there); default disable for local/dev.
+// User and password are URL-encoded so BYOI Secrets with reserved characters
+// still parse.
 func resolveDatabaseURL(getenv func(string) string) string {
-	if url := getenv("DATABASE_URL"); url != "" {
-		return url
+	if raw := getenv("DATABASE_URL"); raw != "" {
+		return raw
 	}
 	if host := getenv("DATABASE_HOST"); host != "" {
 		user := getenv("DATABASE_USER")
@@ -84,14 +90,26 @@ func resolveDatabaseURL(getenv func(string) string) string {
 			port = "5432"
 		}
 		name := getenv("DATABASE_NAME")
-		auth := user
-		if pass != "" {
-			auth = user + ":" + pass
+		sslmode := getenv("PGSSLMODE")
+		if sslmode == "" {
+			sslmode = "disable"
 		}
-		if auth != "" {
-			auth += "@"
+		u := &url.URL{
+			Scheme: "postgres",
+			Host:   net.JoinHostPort(host, port),
+			Path:   "/" + name,
 		}
-		return "postgres://" + auth + host + ":" + port + "/" + name + "?sslmode=disable"
+		if user != "" {
+			if pass != "" {
+				u.User = url.UserPassword(user, pass)
+			} else {
+				u.User = url.User(user)
+			}
+		}
+		q := url.Values{}
+		q.Set("sslmode", sslmode)
+		u.RawQuery = q.Encode()
+		return u.String()
 	}
 	return "sqlite://./rbac.db"
 }

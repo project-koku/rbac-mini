@@ -46,7 +46,8 @@ no Kessel, no Kafka, no Celery, no BOP lookups (on-prem runs with
 
 ## Quick start
 
-Requirements: Go 1.27+, and PostgreSQL 16 for the Postgres leg.
+Requirements: Go 1.26.5+ (aligned with koku-service-operator's UBI go-toolset
+for on-prem embed), and PostgreSQL 16 for the Postgres leg.
 
 ```bash
 go test ./...                                   # SQLite, no Docker needed

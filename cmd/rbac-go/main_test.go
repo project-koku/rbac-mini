@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -218,5 +220,36 @@ func TestSyncEnvFallback(t *testing.T) {
 	got := principals(t, dsn, "100001")
 	if !got["alice"] || !got["bob"] {
 		t.Errorf("principals = %v, want alice and bob", got)
+	}
+}
+
+// TestMaybeFIPSStatus pins the operator verify-fips contract: --fips-status
+// prints JSON and does not start the server.
+func TestMaybeFIPSStatus(t *testing.T) {
+	var buf bytes.Buffer
+	handled, err := maybeFIPSStatus([]string{"--fips-status"}, &buf)
+	if err != nil {
+		t.Fatalf("maybeFIPSStatus: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected --fips-status to be handled")
+	}
+	var status struct {
+		Enabled bool   `json:"enabled"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(&buf).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.Version == "" {
+		t.Error("version empty")
+	}
+
+	handled, err = maybeFIPSStatus([]string{"serve"}, io.Discard)
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	if handled {
+		t.Fatal("serve must not be treated as fips-status")
 	}
 }

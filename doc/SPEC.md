@@ -214,7 +214,10 @@ empty access (matches bootstrap behavior).
 
 * Env accepted: `API_PATH_PREFIX=/api/rbac`, `DATABASE_URL` (preferred:
   `sqlite:///path.db` for dev/test, `postgres://...` for prod) or legacy
-  `DATABASE_{HOST,PORT,NAME,USER,PASSWORD}` (Postgres),
+  `DATABASE_{HOST,PORT,NAME,USER,PASSWORD}` (Postgres; user/password are
+  URL-encoded when assembling the DSN), `PGSSLMODE` (maps to `sslmode` on
+  the assembled URL; default `disable`; the operator sets this from
+  `spec.database.sslMode`),
   `REDIS_HOST/PORT/*` (ignored), `DJANGO_SECRET_KEY` (ignored),
   `ACCESS_CACHE_ENABLED` (ignored, treat as false), `ROLE_CREATE_ALLOW_LIST`.
 * Listens `:8080`, plain HTTP (`RBACAPIDeployment`, `RBACAPIService`,

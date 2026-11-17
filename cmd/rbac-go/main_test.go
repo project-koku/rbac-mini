@@ -149,6 +149,7 @@ func TestRunFlagErrors(t *testing.T) {
 // TestResolveDatabaseURL: DATABASE_URL wins; otherwise the operator's legacy
 // DATABASE_{HOST,PORT,NAME,USER,PASSWORD} assembles a postgres URL. The
 // operator always injects those, so the binary must not require DATABASE_URL.
+// PGSSLMODE maps to sslmode (default disable); user/password are URL-encoded.
 func TestResolveDatabaseURL(t *testing.T) {
 	get := func(m map[string]string) func(string) string {
 		return func(k string) string { return m[k] }
@@ -167,6 +168,23 @@ func TestResolveDatabaseURL(t *testing.T) {
 	want := "postgres://rbac:p@db:5432/costonprem_rbac?sslmode=disable"
 	if got != want {
 		t.Errorf("legacy env = %q, want %q", got, want)
+	}
+	got = resolveDatabaseURL(get(map[string]string{
+		"DATABASE_HOST": "db", "DATABASE_PORT": "5432",
+		"DATABASE_NAME": "costonprem_rbac", "DATABASE_USER": "rbac", "DATABASE_PASSWORD": "p",
+		"PGSSLMODE": "require",
+	}))
+	want = "postgres://rbac:p@db:5432/costonprem_rbac?sslmode=require"
+	if got != want {
+		t.Errorf("PGSSLMODE=require = %q, want %q", got, want)
+	}
+	got = resolveDatabaseURL(get(map[string]string{
+		"DATABASE_HOST": "db", "DATABASE_PORT": "5432",
+		"DATABASE_NAME": "n", "DATABASE_USER": "u/ser", "DATABASE_PASSWORD": "p%ss/@#",
+	}))
+	want = "postgres://u%2Fser:p%25ss%2F%40%23@db:5432/n?sslmode=disable"
+	if got != want {
+		t.Errorf("URL-encoded credentials = %q, want %q", got, want)
 	}
 	if got := resolveDatabaseURL(get(map[string]string{})); got == "" {
 		t.Errorf("empty env resolved empty, want dev default")

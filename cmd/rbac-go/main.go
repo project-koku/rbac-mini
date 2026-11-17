@@ -12,6 +12,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"rbac-go/internal/fips"
 	"rbac-go/internal/keycloak"
 	"rbac-go/internal/seed"
 	"rbac-go/internal/server"
@@ -26,9 +28,25 @@ import (
 )
 
 func main() {
-	if err := run(os.Args[1:], resolveDatabaseURL(os.Getenv)); err != nil {
+	args := os.Args[1:]
+	if handled, err := maybeFIPSStatus(args, os.Stdout); handled {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if err := run(args, resolveDatabaseURL(os.Getenv)); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// maybeFIPSStatus handles --fips-status before any subcommand. The operator
+// image's verify-fips script invokes the binary with only that flag.
+func maybeFIPSStatus(args []string, w io.Writer) (bool, error) {
+	if len(args) == 0 || args[0] != "--fips-status" {
+		return false, nil
+	}
+	return true, fips.WriteStatus(w)
 }
 
 // envOr returns the env value or a default.

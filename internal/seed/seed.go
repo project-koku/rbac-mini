@@ -11,9 +11,35 @@ import (
 // adminRoles is the on-prem seed set (mirrors the operator
 // rbac_seed/data/*.roles.json admin_default roles koku needs:
 // cost-management for the UI/API, sources for the Integrations tab).
+// These attach to public "Default admin access" via seedDefaultAdminGroup.
 var adminRoles = []struct{ name, permission string }{
 	{"Cost Administrator", "cost-management:*:*"},
 	{"Sources administrator", "sources:*:*"},
+}
+
+// packagedRoles are operator system roles that are NOT admin_default and must
+// not be linked to Default admin access. display_name matches operator JSON
+// casing (lowercase "administrator" / "viewer").
+var packagedRoles = []struct {
+	name, displayName string
+	permissions       []string
+}{
+	{
+		name:        "Cost Price List Administrator",
+		displayName: "Cost Price List administrator",
+		permissions: []string{
+			"cost-management:cost_model:*",
+			"cost-management:settings:*",
+		},
+	},
+	{
+		name:        "Cost Price List Viewer",
+		displayName: "Cost Price List viewer",
+		permissions: []string{
+			"cost-management:cost_model:read",
+			"cost-management:settings:read",
+		},
+	},
 }
 
 // defaultAdminGroup is the public tenant group Django's seed_group() creates
@@ -85,6 +111,11 @@ func Seed(db *store.DB) error {
 			return err
 		}
 	}
+	for _, role := range packagedRoles {
+		if err := seedPackagedRole(tx, tenantID, role.name, role.displayName, role.permissions); err != nil {
+			return err
+		}
+	}
 	if err := seedDefaultAdminGroup(tx, tenantID); err != nil {
 		return err
 	}
@@ -132,45 +163,65 @@ func seedDefaultAdminGroup(tx *store.Tx, tenantID int64) error {
 	return nil
 }
 
-// seedRole upserts one system role with a single permission grant.
+// seedRole upserts one system admin_default role with a single permission grant.
 func seedRole(tx *store.Tx, tenantID int64, name, permission string) error {
-	parts := strings.Split(permission, ":")
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid seed permission %q", permission)
+	return seedRoleWithFlags(tx, tenantID, name, name, []string{permission}, true)
+}
+
+// seedPackagedRole upserts a system role that is not admin_default and is not
+// attached to Default admin access. Used for operator packaged roles such as
+// Cost Price List Administrator/Viewer.
+func seedPackagedRole(tx *store.Tx, tenantID int64, name, displayName string, permissions []string) error {
+	return seedRoleWithFlags(tx, tenantID, name, displayName, permissions, false)
+}
+
+// seedRoleWithFlags upserts a system role and its access grants. When
+// adminDefault is true the role is marked admin_default (Default admin access
+// path); otherwise admin_default stays 0.
+func seedRoleWithFlags(tx *store.Tx, tenantID int64, name, displayName string, permissions []string, adminDefault bool) error {
+	adminDefaultFlag := 0
+	if adminDefault {
+		adminDefaultFlag = 1
 	}
 	roleID, err := getOrCreate(tx,
 		`SELECT id FROM roles WHERE name=? AND tenant_id=?`, []any{name, tenantID},
 		`INSERT INTO roles(uuid, name, display_name, system, created, modified, tenant_id)
 		 VALUES(?, ?, ?, 1, ?, ?, ?)
-		 ON CONFLICT(name, tenant_id) DO NOTHING`, store.NewUUID(), name, name, store.Now(), store.Now(), tenantID)
+		 ON CONFLICT(name, tenant_id) DO NOTHING`, store.NewUUID(), name, displayName, store.Now(), store.Now(), tenantID)
 	if err != nil {
 		return err
 	}
-	// Existing databases predate the admin_default flag; the operator seed
-	// data marks both roles admin_default, so upgrade the row in place.
-	if _, err := tx.Exec(`UPDATE roles SET admin_default=1, platform_default=0, system=1,
+	// Existing databases may predate admin_default / display_name; upgrade
+	// the row in place to match the current seed contract.
+	if _, err := tx.Exec(`UPDATE roles SET admin_default=?, platform_default=0, system=1,
 		display_name=?, created=COALESCE(NULLIF(created,''), ?),
 		modified=COALESCE(NULLIF(modified,''), ?) WHERE id=?`,
-		name, store.Now(), store.Now(), roleID); err != nil {
+		adminDefaultFlag, displayName, store.Now(), store.Now(), roleID); err != nil {
 		return err
 	}
-	permID, err := getOrCreate(tx,
-		`SELECT id FROM permissions WHERE permission=?`, []any{permission},
-		`INSERT INTO permissions(application, resource_type, verb, permission, tenant_id)
-		 VALUES(?,?,?, ?, ?)
-		 ON CONFLICT(permission) DO NOTHING`, parts[0], parts[1], parts[2], permission, tenantID)
-	if err != nil {
-		return err
-	}
-	var accessID int64
-	if err := tx.QueryRow(`SELECT id FROM access WHERE role_id=? AND permission_id=?`,
-		roleID, permID).Scan(&accessID); err == sql.ErrNoRows {
-		if _, err := tx.Exec(`INSERT INTO access(role_id, permission_id, tenant_id)
-			VALUES(?,?,?)`, roleID, permID, tenantID); err != nil {
+	for _, permission := range permissions {
+		parts := strings.Split(permission, ":")
+		if len(parts) != 3 {
+			return fmt.Errorf("invalid seed permission %q", permission)
+		}
+		permID, err := getOrCreate(tx,
+			`SELECT id FROM permissions WHERE permission=?`, []any{permission},
+			`INSERT INTO permissions(application, resource_type, verb, permission, tenant_id)
+			 VALUES(?,?,?, ?, ?)
+			 ON CONFLICT(permission) DO NOTHING`, parts[0], parts[1], parts[2], permission, tenantID)
+		if err != nil {
 			return err
 		}
-	} else if err != nil {
-		return err
+		var accessID int64
+		if err := tx.QueryRow(`SELECT id FROM access WHERE role_id=? AND permission_id=?`,
+			roleID, permID).Scan(&accessID); err == sql.ErrNoRows {
+			if _, err := tx.Exec(`INSERT INTO access(role_id, permission_id, tenant_id)
+				VALUES(?,?,?)`, roleID, permID, tenantID); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
 	}
 	return nil
 }

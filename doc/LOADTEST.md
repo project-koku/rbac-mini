@@ -210,7 +210,7 @@ path would need most of the box and several GiB.
 
 ### Prerequisites
 
-* Docker (Docker Desktop was used; `host.docker.internal` must resolve from containers).
+* Docker (any engine that supports user-defined bridge networks; Docker Desktop is fine).
 * Python 3 (stdlib only; no packages to install).
 * `curl`, `git`.
 * Go 1.27 toolchain, for [native.sh](../scripts/loadtest/native.sh) and the tests.
@@ -365,8 +365,12 @@ Host: Apple M1 Max, 10 logical CPUs, macOS (Darwin arm64), Docker server 29.4.0.
 stage's full record is in its `ENV.txt`, which also lists the tracked files that were
 uncommitted when the stage ran.
 
-Apps reach Postgres and Valkey through `host.docker.internal`. The load generator runs on
-the host and hits the published ports.
+Postgres, Valkey, rbac-go, and Django share a user-defined bridge network
+(`LOADTEST_NETWORK`, default `rbac-loadtest`). App containers reach the database and
+cache by **container DNS** on internal ports (`PG_NET_HOST:5432`, `VALKEY_NET_HOST:6379`;
+defaults are the Postgres/Valkey container names). The load generator still runs on the
+host and hits the **published** localhost ports (`PG_PORT`, `VALKEY_PORT`, `DJANGO_PORT`,
+`GO_PORT`). There is no `host.docker.internal` hop on the app→DB path.
 
 ### Data
 
@@ -465,17 +469,21 @@ of the container configurations vary.
 
 * **On-prem connection budget**: each rbac-go process can hold up to 25 Postgres connections.
   The sum over replicas, plus Django's workers × threads, has to stay under `max_connections`.
-  This is not checked anywhere yet. The [concurrency sweep](#concurrency-sweep-where-the-pool-stops-mattering)
-  shows 25 is enough for this workload; it does not validate the arithmetic for a real
-  multi-replica deployment.
+  The [concurrency sweep](#concurrency-sweep-where-the-pool-stops-mattering) shows 25 is
+  enough for this workload. Arithmetic vs operator defaults (2026-11-18): default **1**
+  RBAC API replica → ≤25 conns; go backend has no worker; at ≥4 replicas Mini alone can
+  fill a shared Postgres with default `max_connections=100` (instance-wide, shared with
+  koku). Still no live multi-replica `pg_stat_activity` sample or operator docs warning —
+  track as B1 (Jira later, bulk).
 * **Profile the remaining cost**: the container p50 is 3.5 ms at C20 and the native Postgres
   p50 is 1.4 ms. The query plan and the JSON encoding are the next things to look at, but no
   profile has been taken. The sweep suggests the gap is at least partly the container network
   path, not the query.
-* **Remove `host.docker.internal` from the path**: put Postgres, Valkey and both apps on one
-  user-defined bridge network, to measure the container overhead without the Docker VM hop.
-  The sweep's container cap (about 6000 req/s, half the native rate) is the reason to try this
-  next; re-run C20 to C100 after the change.
+* **Re-measure after shared-bridge harness** (B3 done in scripts): Postgres, Valkey, and both
+  apps now share `LOADTEST_NETWORK` and use container DNS instead of
+  `host.docker.internal`. Re-run C20–C100 (and optionally the go-pool stage) so the
+  published numbers reflect the new path; older ENV/REPORT rows still describe the
+  Desktop VM hop.
 * **Record error kinds** in [loadtest.py](../scripts/loadtest/loadtest.py) (status code or exception class), so a stall like
   Finding 3 can be attributed without inference.
 * **Load generator headroom**: at C100 the client used 0.67 cores in one Python process, and
@@ -487,9 +495,11 @@ of the container configurations vary.
   and that has not been translated yet.
 * **More data shapes**: one org, one group, one role here. Real koku traffic spans many orgs,
   groups and principals.
-* **Django log error**: `Role seeding failed` (`ValueError: badly formed hexadecimal UUID`)
-  appears at container start. It was not investigated. The measurement does not depend on
-  seeds, because the fixture creates its own role and grant.
+* **Django log error** (mitigated in harness): `Role seeding failed`
+  (`ValueError: badly formed hexadecimal UUID`) came from empty `SYSTEM_*_ROLE_UUID` env
+  vars at container start. [env.sh](../scripts/loadtest/env.sh) now sets the same placeholder
+  UUIDs as the operator. The measurement still does not depend on those seeds (the fixture
+  creates its own role and grant).
 
 ## Artifacts
 

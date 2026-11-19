@@ -16,18 +16,25 @@ if [ "${REBUILD:-0}" = 1 ] || ! docker image inspect "$DJANGO_IMAGE" >/dev/null 
   docker build -t "$DJANGO_IMAGE" "$INSIGHTS_RBAC_DIR"
 fi
 
+ensure_loadtest_network
+ensure_on_loadtest_network "$PG_CONTAINER"
+ensure_on_loadtest_network "$VALKEY_CONTAINER"
+
 docker rm -f "$DJANGO_CONTAINER" >/dev/null 2>&1 || true
 
-docker run --rm --entrypoint python -w /opt/rbac/rbac "${DJANGO_ENV[@]}" "$DJANGO_IMAGE" \
+docker run --rm --network "$LOADTEST_NETWORK" --entrypoint python -w /opt/rbac/rbac \
+  "${DJANGO_ENV[@]}" "$DJANGO_IMAGE" \
   manage.py migrate --noinput
-docker run --rm -i --entrypoint python -w /opt/rbac/rbac "${DJANGO_ENV[@]}" "$DJANGO_IMAGE" \
+docker run --rm -i --network "$LOADTEST_NETWORK" --entrypoint python -w /opt/rbac/rbac \
+  "${DJANGO_ENV[@]}" "$DJANGO_IMAGE" \
   manage.py shell < "$LOADTEST_DIR/django_fixture.py"
 
-docker run -d --name "$DJANGO_CONTAINER" -p "$DJANGO_PORT:8080" "${DJANGO_ENV[@]}" \
+docker run -d --name "$DJANGO_CONTAINER" --network "$LOADTEST_NETWORK" \
+  -p "$DJANGO_PORT:8080" "${DJANGO_ENV[@]}" \
   -e "ACCESS_CACHE_ENABLED=$cache" "$DJANGO_IMAGE" >/dev/null
 
 if ! wait_until 120 "django" probe_app "$DJANGO_PORT" "$DJANGO_PREFIX"; then
   docker logs --tail 40 "$DJANGO_CONTAINER" >&2
   exit 1
 fi
-echo "django up on :$DJANGO_PORT (ACCESS_CACHE_ENABLED=$cache)"
+echo "django up on :$DJANGO_PORT (ACCESS_CACHE_ENABLED=$cache, network $LOADTEST_NETWORK)"

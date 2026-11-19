@@ -39,6 +39,7 @@ broker. The on-prem beat entry `car-wash-daily` scans an always-empty table.
 - On-prem is single-org per deployment: the operator never creates these
   rows, koku never queries them. rbac-go has no such table. If ever needed,
   it ports as a periodic `rbac-go expire-cross-account` CronJob entry.
+  **Resolution (2026-11-19):** Remains SaaS-only / out of scope for Mini; no Jira.
 
 ## 3. Image entrypoints do not decide compatibility
 
@@ -65,8 +66,10 @@ broker. The on-prem beat entry `car-wash-daily` scans an always-empty table.
   Envoy `/api/rbac/` route, `RBAC_SERVICE_{HOST,PORT,PATH,PROTOCOL}` — all
   unchanged by the swap.
 - Note: `ROLE_CREATE_ALLOW_LIST=cost-management,sources` exists for the
-  custom-role wizard's `GET /permissions/?allowed_only=true` (v1 endpoint
-  outside our scope; flagged, not ported).
+  custom-role wizard's `GET /permissions/?allowed_only=true`.
+  **Resolution (2026-11-19):** Stale “flagged, not ported” — `/permissions/`
+  and allow-list gating are implemented (`internal/permission` + server tests;
+  SPEC §1). No Jira.
 
 ## 5. Keycloak sync semantics (what `sync` must replicate)
 
@@ -92,6 +95,8 @@ broker. The on-prem beat entry `car-wash-daily` scans an always-empty table.
 - [sources.roles.json](https://github.com/project-koku/koku-service-operator/blob/main/internal/resources/rbac_seed/data/sources.roles.json): Sources administrator (`sources:*:*`, admin_default).
 - rbac-go seeds the two admin_default roles; price-list roles are an explicit
   open decision (needed only if on-prem UI delegation uses them).
+  **Resolution (2026-11-19):** Seed Cost Price List Admin + Viewer —
+  [COST-8619](https://redhat.atlassian.net/browse/COST-8619).
 
 ## 7. On-prem UI (koku-ui/apps/rbac-ui-onprem) API surface
 
@@ -127,3 +132,5 @@ Confirmed on-prem UI calls (traffic traces + source refs):
 Implication: if the on-prem UI keeps working against rbac-go, the Go scope
 grows beyond `/access/` to v1 principals/groups/roles/permissions
 (list + roles/groups CRUD). Decision recorded separately.
+**Resolution (2026-11-19):** In scope per SPEC §1; CRC verified 2026-11-07
+([LIVE-CLUSTER-TEST.md](LIVE-CLUSTER-TEST.md)). No Jira.

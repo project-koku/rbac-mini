@@ -72,6 +72,9 @@ Go replacement for `insights-rbac`, scoped to what `../koku` and
   cache ([koku/middleware.py:380-393](https://github.com/project-koku/koku/blob/main/koku/koku/middleware.py#L380-L393)) absorbs the load. Add `go-redis` only
   if load tests demand it, using existing key format
   `rbac::policy::tenant={org}::user={uuid}` ([management/cache.py:200-260](https://github.com/RedHatInsights/insights-rbac/blob/master/rbac/management/cache.py#L200-L260)).
+  **Resolution (2026-11-19):** No rbac-side cache for now — pool fixed the Go
+  tail; Mini without cache beats Django+Valkey on median/throughput
+  ([LOADTEST.md](LOADTEST.md)). Keep the conditional wording; no Jira.
 
 ## 2. API Contract
 
@@ -244,6 +247,9 @@ empty access (matches bootstrap behavior).
 
 No Valkey client, no JWT/BOP/IT-service calls, no write endpoints, no authz
 decision beyond the access-list query, no cross-account flows.
+**Resolution (2026-11-19):** Doc inconsistency — “no write endpoints” is stale
+relative to §1 (principals/roles/groups/permissions CRUD for the on-prem UI).
+Correct when SPEC is next edited; not a feature Jira.
 
 ## 7. Acceptance
 

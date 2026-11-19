@@ -43,16 +43,46 @@ GO_CONTAINER="${GO_CONTAINER:-rbac-go-srv}"
 GO_PORT="${GO_PORT:-18093}"
 GO_PREFIX="/api/rbac/v1"
 
-# Name the containers use for the host (Docker Desktop provides this name).
-HOST_FROM_CONTAINER="${HOST_FROM_CONTAINER:-host.docker.internal}"
+# Shared user-defined bridge: app containers reach Postgres/Valkey by container
+# DNS on internal ports. The host load generator still uses published localhost ports.
+LOADTEST_NETWORK="${LOADTEST_NETWORK:-rbac-loadtest}"
+# DNS names on LOADTEST_NETWORK (defaults: container names; override for aliases).
+PG_NET_HOST="${PG_NET_HOST:-$PG_CONTAINER}"
+VALKEY_NET_HOST="${VALKEY_NET_HOST:-$VALKEY_CONTAINER}"
+PG_NET_PORT=5432
+VALKEY_NET_PORT=6379
 
+# Ensure the load-test bridge exists (idempotent).
+ensure_loadtest_network() {
+  docker network inspect "$LOADTEST_NETWORK" >/dev/null 2>&1 ||
+    docker network create "$LOADTEST_NETWORK" >/dev/null
+}
+
+# Attach an existing container to LOADTEST_NETWORK if it is not already there.
+# On a user-defined network the container name resolves as DNS for peers.
+ensure_on_loadtest_network() {
+  local container=$1
+  if docker inspect -f "{{json .NetworkSettings.Networks}}" "$container" 2>/dev/null |
+    grep -q "\"$LOADTEST_NETWORK\""; then
+    return 0
+  fi
+  docker network connect "$LOADTEST_NETWORK" "$container"
+}
+
+# App→DB/cache: container DNS + internal ports (not host.docker.internal).
+# SYSTEM_*_ROLE_UUID placeholders match the operator rbacEnv() so Django's
+# platform-role seed does not fail with "badly formed hexadecimal UUID" (B8).
 DJANGO_ENV=(
-  -e "DATABASE_HOST=$HOST_FROM_CONTAINER" -e "DATABASE_PORT=$PG_PORT" -e DATABASE_NAME=postgres
+  -e "DATABASE_HOST=$PG_NET_HOST" -e "DATABASE_PORT=$PG_NET_PORT" -e DATABASE_NAME=postgres
   -e DATABASE_USER=postgres -e "DATABASE_PASSWORD=$PG_PASSWORD"
-  -e "REDIS_HOST=$HOST_FROM_CONTAINER" -e "REDIS_PORT=$VALKEY_PORT"
+  -e "REDIS_HOST=$VALKEY_NET_HOST" -e "REDIS_PORT=$VALKEY_NET_PORT"
   -e BYPASS_BOP_VERIFICATION=True -e DJANGO_SECRET_KEY=loadtest
+  -e SYSTEM_DEFAULT_ROOT_WORKSPACE_ROLE_UUID=00000000-0000-4000-a000-000000000001
+  -e SYSTEM_DEFAULT_TENANT_ROLE_UUID=00000000-0000-4000-a000-000000000002
+  -e SYSTEM_ADMIN_ROOT_WORKSPACE_ROLE_UUID=00000000-0000-4000-a000-000000000003
+  -e SYSTEM_ADMIN_TENANT_ROLE_UUID=00000000-0000-4000-a000-000000000004
 )
-GO_DATABASE_URL="postgres://postgres:${PG_PASSWORD}@${HOST_FROM_CONTAINER}:${PG_PORT}/rbacgo?sslmode=disable"
+GO_DATABASE_URL="postgres://postgres:${PG_PASSWORD}@${PG_NET_HOST}:${PG_NET_PORT}/rbacgo?sslmode=disable"
 
 PROBE_IDENTITY="$(python3 -c "
 import base64, json
@@ -77,9 +107,12 @@ wait_until() {
 }
 
 # probe_app <port> <api-prefix>: succeeds once the access endpoint answers 200.
+# Use 127.0.0.1 (not localhost) and short curl timeouts so wait_until can retry
+# while Docker/Rancher finishes wiring the published port and the process binds.
 probe_app() {
-  curl -fsS -o /dev/null -H "X-Rh-Identity: $PROBE_IDENTITY" \
-    "http://localhost:$1$2/access/?application=$APPLICATION&limit=5"
+  curl -fsS --connect-timeout 1 --max-time 3 -o /dev/null \
+    -H "X-Rh-Identity: $PROBE_IDENTITY" \
+    "http://127.0.0.1:$1$2/access/?application=$APPLICATION&limit=5"
 }
 
 # measure_config <label> <port> <api-prefix>: RUNS measured runs, one JSON file each.

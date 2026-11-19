@@ -30,6 +30,7 @@ image_id() {
   echo "logical cpus:   $(sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
   echo "docker server:  $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
   echo "docker vm:      $(docker info --format 'cpus {{.NCPU}}, memory {{.MemTotal}} bytes' 2>/dev/null || echo unknown)"
+  echo "loadtest network: $LOADTEST_NETWORK (app→db via $PG_NET_HOST:$PG_NET_PORT / $VALKEY_NET_HOST:$VALKEY_NET_PORT)"
   echo
   echo "rbac-go commit:        $(commit "$RBAC_GO_DIR")"
   echo "insights-rbac commit:  $(commit "$INSIGHTS_RBAC_DIR")"

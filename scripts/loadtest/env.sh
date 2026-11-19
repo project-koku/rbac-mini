@@ -107,9 +107,12 @@ wait_until() {
 }
 
 # probe_app <port> <api-prefix>: succeeds once the access endpoint answers 200.
+# Use 127.0.0.1 (not localhost) and short curl timeouts so wait_until can retry
+# while Docker/Rancher finishes wiring the published port and the process binds.
 probe_app() {
-  curl -fsS -o /dev/null -H "X-Rh-Identity: $PROBE_IDENTITY" \
-    "http://localhost:$1$2/access/?application=$APPLICATION&limit=5"
+  curl -fsS --connect-timeout 1 --max-time 3 -o /dev/null \
+    -H "X-Rh-Identity: $PROBE_IDENTITY" \
+    "http://127.0.0.1:$1$2/access/?application=$APPLICATION&limit=5"
 }
 
 # measure_config <label> <port> <api-prefix>: RUNS measured runs, one JSON file each.

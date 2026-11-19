@@ -33,6 +33,7 @@ evidence from that era.
    by default; the org-admin source is the realm role named by
    `SYNC_ORG_ADMIN_SUBGROUP` (default `org-admin`). Single-org `--org` mode
    is kept for tests/ops.
+   **Resolution (2026-11-19):** Closed for tracking; no Jira.
 2. **Seed parity**: rbac-mini seeds `Cost Administrator` + `Sources
    administrator` (both `admin_default`), the public `Default admin access`
    group, and the granular cost-management/sources permission catalog the
@@ -40,6 +41,7 @@ evidence from that era.
    Administrator/Viewer` etc.; those roles are still absent and are needed
    only if on-prem UI delegation uses them
    ([rbac_seed/data/](https://github.com/project-koku/koku-service-operator/tree/main/internal/resources/rbac_seed/data)).
+   **Resolution (2026-11-19):** Seed both Price List Admin and Viewer (operator-parity grants) — [COST-8619](https://redhat.atlassian.net/browse/COST-8619).
 
 ## 2. API Deployment ([rbac.go: RBACAPIDeployment](https://github.com/project-koku/koku-service-operator/blob/main/internal/resources/rbac.go))
 
@@ -88,6 +90,8 @@ They coexist with Django tables; drop the old ones in a later release.
 `waitForRBACDB` initContainer unchanged. When the operator sets
 `PGSSLMODE` from `spec.database.sslMode`, Mini honors it on the assembled
 Postgres URL (user/password are URL-encoded).
+**Resolution (2026-11-19):** Keep Django tables until after next-year GA so
+rollback to insights-rbac stays possible; no Jira for now.
 
 ## 7. Upgrade / rollback note
 
@@ -95,6 +99,9 @@ With `backend: go`, the Mini binary follows the **running operator image**.
 A `status.upgrade` rollback restores the CR spec but cannot bring back a
 previous Mini binary — that requires rolling the operator Deployment back
 to the previous operator image.
+**Resolution (2026-11-19):** Investigate CR rollback vs embedded Mini
+binary/schema mismatch and implement the safest approach —
+[COST-8620](https://redhat.atlassian.net/browse/COST-8620).
 
 ## 8. Verification
 

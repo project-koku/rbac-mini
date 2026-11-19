@@ -1,5 +1,12 @@
 # rbac-go agent guide
 
+## STANDING ORDER — do NOT create Jira tasks
+
+**Do not create or ask to create any Jira issue.** Victor will open tickets later
+in bulk, only when he explicitly says so. Local tracking:
+[`.cursor/docs/collected-questions.md`](.cursor/docs/collected-questions.md);
+rule: [`.cursor/rules/no-jira-create.mdc`](.cursor/rules/no-jira-create.mdc).
+
 `rbac-go` is a single-binary Go replacement for the v1 subset of
 insights-rbac that koku and the on-prem UI use. It is a separate git
 repository, checked out inside `insights-rbac/`; the parent

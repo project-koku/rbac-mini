@@ -115,11 +115,17 @@ Verified live 2026-11-06 (both directions). Caveats found while testing:
   custom group wiring. Live symptom: Django `/access/` returned
   `aws.account:*` + `openshift.cluster:*` (public Default-access viewers)
   instead of the Go-seeded `cost-management:*:*`.
+  **Resolution (2026-11-19):** Not accepted as docs-only — safer coexistence
+  so Mini-created groups/policies survive Django rollback is tracked in
+  [COST-8621](https://redhat.atlassian.net/browse/COST-8621).
 * That same test exposed a real Go parity gap (fixed in rbac-mini):
   Django auto-includes the **public** tenant's platform-default groups in
   every `/access/` call, plus admin_default groups for org admins.
+  **Resolution (2026-11-19):** Fixed in rbac-mini; current behavior also in
+  AGENTS.md / GUIDE.md. No further tracking.
 * Test-only rows (org `99999` tenant `org99999`, principal `testlive`) remain
   in `costonprem_rbac`; harmless, no cleanup job exists for them.
+  **Resolution (2026-11-19):** Lab hygiene only; no product Jira.
 ```
 
 ## 2026-11-07: principal profiles and the RBAC UI (v0.3.3)
@@ -228,4 +234,9 @@ columns render dates instead of "Invalid date"/"—".
   tables; nothing is dropped on either flip.
 - [scripts/flush-rbac-cache.sh](https://github.com/project-koku/koku-service-operator/blob/main/scripts/flush-rbac-cache.sh) only affects koku-side cache now.
 - Known gaps at time of writing: seed parity for price-list roles
-  (see [OPERATOR-SWAP.md §0.3](OPERATOR-SWAP.md#0-open-decisions)); `main` flag polish is in-repo only.
+  (see [OPERATOR-SWAP.md §1](OPERATOR-SWAP.md#1-open-decisions-still-relevant));
+  `main` flag polish is in-repo only.
+  **Resolution (2026-11-19):** Price-list seed tracked in
+  [COST-8619](https://redhat.atlassian.net/browse/COST-8619). Flag-polish note
+  is not necessary work — the operator image embeds the rbac-mini commit SHA;
+  compare that pin to Mini `main` rather than opening a ticket.

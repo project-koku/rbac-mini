@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -214,5 +215,134 @@ func TestBootstrapGrantsCostAdministrator(t *testing.T) {
 		if after[table] != n {
 			t.Errorf("%s: count changed %d -> %d, want idempotent", table, n, after[table])
 		}
+	}
+}
+
+// TestSeedCostPriceListRoles: operator-parity packaged roles for Cost Price
+// List Administrator/Viewer. They must be system, not admin_default, and
+// must not attach to Default admin access (unlike Cost Administrator /
+// Sources administrator).
+func TestSeedCostPriceListRoles(t *testing.T) {
+	db := testDB(t)
+
+	if err := Seed(db); err != nil {
+		t.Fatalf("first Seed returned error: %v", err)
+	}
+
+	type wantRole struct {
+		name        string
+		displayName string
+		perms       []string
+	}
+	want := []wantRole{
+		{
+			name:        "Cost Price List Administrator",
+			displayName: "Cost Price List administrator",
+			perms:       []string{"cost-management:cost_model:*", "cost-management:settings:*"},
+		},
+		{
+			name:        "Cost Price List Viewer",
+			displayName: "Cost Price List viewer",
+			perms:       []string{"cost-management:cost_model:read", "cost-management:settings:read"},
+		},
+	}
+
+	roleAccessCounts := map[string]int{}
+	for _, r := range want {
+		var system, adminDefault, platformDefault int
+		var displayName string
+		err := db.QueryRow(`SELECT r.system, r.admin_default, r.platform_default, r.display_name
+			FROM roles r
+			JOIN tenants t ON t.id = r.tenant_id
+			WHERE r.name=? AND t.tenant_name='public'`, r.name).Scan(
+			&system, &adminDefault, &platformDefault, &displayName)
+		if err != nil {
+			t.Fatalf("role %q missing: %v", r.name, err)
+		}
+		if system != 1 {
+			t.Errorf("role %q system = %d, want 1", r.name, system)
+		}
+		if adminDefault != 0 {
+			t.Errorf("role %q admin_default = %d, want 0", r.name, adminDefault)
+		}
+		if platformDefault != 0 {
+			t.Errorf("role %q platform_default = %d, want 0", r.name, platformDefault)
+		}
+		if displayName != r.displayName {
+			t.Errorf("role %q display_name = %q, want %q", r.name, displayName, r.displayName)
+		}
+
+		rows, err := db.Query(`SELECT p.permission FROM permissions p
+			JOIN access a ON a.permission_id = p.id
+			JOIN roles r ON r.id = a.role_id
+			JOIN tenants t ON t.id = r.tenant_id
+			WHERE r.name=? AND t.tenant_name='public'
+			ORDER BY p.permission`, r.name)
+		if err != nil {
+			t.Fatalf("access query for %q: %v", r.name, err)
+		}
+		var got []string
+		for rows.Next() {
+			var perm string
+			if err := rows.Scan(&perm); err != nil {
+				t.Fatalf("scan access for %q: %v", r.name, err)
+			}
+			got = append(got, perm)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows for %q: %v", r.name, err)
+		}
+		_ = rows.Close()
+		wantPerms := append([]string(nil), r.perms...)
+		slices.Sort(wantPerms)
+		if !slices.Equal(got, wantPerms) {
+			t.Errorf("role %q grants = %v, want %v", r.name, got, wantPerms)
+		}
+		roleAccessCounts[r.name] = len(got)
+
+		var onAdminGroup int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM policy_roles pr
+			JOIN policies p ON p.id = pr.policy_id
+			JOIN roles r ON r.id = pr.role_id
+			WHERE p.name='Default admin access' AND r.name=?`, r.name).Scan(&onAdminGroup); err != nil {
+			t.Fatalf("Default admin access link check for %q: %v", r.name, err)
+		}
+		if onAdminGroup != 0 {
+			t.Errorf("role %q linked to Default admin access, want not linked", r.name)
+		}
+	}
+
+	var linked int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM policy_roles pr
+		JOIN policies p ON p.id = pr.policy_id
+		WHERE p.name='Default admin access'`).Scan(&linked); err != nil || linked != 2 {
+		t.Errorf("Default admin access roles = %d, err = %v, want 2", linked, err)
+	}
+
+	if err := Seed(db); err != nil {
+		t.Fatalf("second Seed returned error: %v", err)
+	}
+	for _, r := range want {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM roles r
+			JOIN tenants t ON t.id = r.tenant_id
+			WHERE r.name=? AND t.tenant_name='public'`, r.name).Scan(&n); err != nil || n != 1 {
+			t.Errorf("after re-seed, role %q count = %d, err = %v, want 1", r.name, n, err)
+		}
+		var accessN int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM access a
+			JOIN roles r ON r.id = a.role_id
+			JOIN tenants t ON t.id = r.tenant_id
+			WHERE r.name=? AND t.tenant_name='public'`, r.name).Scan(&accessN); err != nil {
+			t.Fatalf("after re-seed, access count for %q: %v", r.name, err)
+		}
+		if accessN != roleAccessCounts[r.name] {
+			t.Errorf("after re-seed, role %q access count = %d, want %d", r.name, accessN, roleAccessCounts[r.name])
+		}
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM policy_roles pr
+		JOIN policies p ON p.id = pr.policy_id
+		WHERE p.name='Default admin access'`).Scan(&linked); err != nil || linked != 2 {
+		t.Errorf("after re-seed, Default admin access roles = %d, err = %v, want 2", linked, err)
 	}
 }

@@ -36,12 +36,15 @@ evidence from that era.
    **Resolution (2026-11-19):** Closed for tracking; no Jira.
 2. **Seed parity**: rbac-mini seeds `Cost Administrator` + `Sources
    administrator` (both `admin_default`), the public `Default admin access`
-   group, and the granular cost-management/sources permission catalog the
-   role wizard lists. The operator seed JSON also defines `Cost Price List
-   Administrator/Viewer` etc.; those roles are still absent and are needed
-   only if on-prem UI delegation uses them
+   group, the granular cost-management/sources permission catalog the role
+   wizard lists, and the packaged `Cost Price List Administrator` /
+   `Cost Price List Viewer` roles (operator-parity grants, not
+   `admin_default`, not on Default admin access)
    ([rbac_seed/data/](https://github.com/project-koku/koku-service-operator/tree/main/internal/resources/rbac_seed/data)).
-   **Resolution (2026-11-19):** Seed both Price List Admin and Viewer (operator-parity grants) — [COST-8619](https://redhat.atlassian.net/browse/COST-8619).
+   Other operator roles (e.g. Cost Cloud Viewer / Cost OpenShift Viewer)
+   remain unseeded until needed.
+   **Resolution (2026-11-19):** Price List Admin + Viewer seeded —
+   [COST-8619](https://redhat.atlassian.net/browse/COST-8619).
 
 ## 2. API Deployment ([rbac.go: RBACAPIDeployment](https://github.com/project-koku/koku-service-operator/blob/main/internal/resources/rbac.go))
 

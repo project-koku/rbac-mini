@@ -24,11 +24,17 @@ go_run migrate
 go_run seed
 go_run bootstrap --org "$ORG_ID" --account "$ACCOUNT" --users "$USERS_CSV"
 
+# Bypass entrypoint.sh: it always migrates before serve. up-go already migrated
+# above; skipping the second migrate lets the process bind :8080 immediately so
+# the host published-port probe is not racing a multi-second migrate window.
 docker run -d --name "$GO_CONTAINER" --network "$LOADTEST_NETWORK" \
   -p "$GO_PORT:8080" -e "DATABASE_URL=$GO_DATABASE_URL" \
-  "$GO_IMAGE" >/dev/null
+  --entrypoint /usr/local/bin/rbac-go "$GO_IMAGE" \
+  serve --addr :8080 >/dev/null
 
-if ! wait_until 60 "rbac-go" probe_app "$GO_PORT" "$GO_PREFIX"; then
+# Same HTTP 200 check as before; allow up to 120s like up-django for slow
+# Docker Desktop / Rancher host-port publish lag after the process is listening.
+if ! wait_until 120 "rbac-go" probe_app "$GO_PORT" "$GO_PREFIX"; then
   docker logs --tail 40 "$GO_CONTAINER" >&2
   exit 1
 fi

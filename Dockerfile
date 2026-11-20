@@ -6,11 +6,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/rbac-go ./cmd/rbac-go
+# ubi9/go-toolset runs as non-root; write under WORKDIR (not /out).
+RUN CGO_ENABLED=0 go build -trimpath -o /src/rbac-go ./cmd/rbac-go
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5
 WORKDIR /data
-COPY --from=build /out/rbac-go /usr/local/bin/rbac-go
+COPY --from=build /src/rbac-go /usr/local/bin/rbac-go
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

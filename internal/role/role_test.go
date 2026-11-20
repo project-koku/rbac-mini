@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"rbac-go/internal/access"
 	"rbac-go/internal/store"
 	"rbac-go/internal/testdb"
 )
@@ -156,6 +157,88 @@ func TestModifiedTimestamps(t *testing.T) {
 	}
 	if patched.Modified == updated.Modified {
 		t.Errorf("modified after patch = %q, want a new timestamp", patched.Modified)
+	}
+}
+
+// TestCreateUpdatePatchErrors covers validation and system-protection paths
+// that the HTTP layer maps through roleWriteError.
+func TestCreateUpdatePatchErrors(t *testing.T) {
+	db := testdb.Open(t)
+	seedRoles(t, db)
+	allow := []string{"cost-management"}
+	if _, err := db.Exec(`INSERT INTO permissions(application, resource_type, verb, permission, tenant_id)
+		VALUES('cost-management','aws.account','read','cost-management:aws.account:read',
+		(SELECT id FROM tenants WHERE org_id='public'))`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Create(db, "100001", "", "", "", nil, allow); err == nil {
+		t.Fatal("Create empty name succeeded")
+	}
+	if _, err := Create(db, "100001", "r1", "", "", []AccessIn{{Permission: "bad"}}, allow); err == nil {
+		t.Fatal("Create bad permission succeeded")
+	}
+	if _, err := Create(db, "100001", "r1", "", "", []AccessIn{{Permission: "sources:*:*"}}, allow); err == nil {
+		t.Fatal("Create disallowed app succeeded")
+	}
+	if _, err := Create(db, "100001", "r1", "", "", []AccessIn{{Permission: "cost-management:missing:read"}}, allow); err == nil {
+		t.Fatal("Create unknown permission succeeded")
+	}
+
+	created, err := Create(db, "100001", "custom-new", "", "d", []AccessIn{{
+		Permission: "cost-management:aws.account:read",
+		ResourceDefinitions: []access.ResourceDefinition{
+			{AttributeFilter: map[string]any{"key": "k", "operation": "equal", "value": "v"}},
+		},
+	}}, allow)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := Create(db, "100001", "custom-new", "", "", []AccessIn{{Permission: "cost-management:aws.account:read"}}, allow); err == nil {
+		t.Fatal("Create duplicate succeeded")
+	}
+
+	var sysUUID string
+	if err := db.QueryRow(`SELECT uuid FROM roles WHERE name='Cost Administrator'`).Scan(&sysUUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(db, "100001", sysUUID, "Cost Administrator", "", "", nil, allow); err == nil {
+		t.Fatal("Update system role succeeded")
+	}
+	if _, err := Patch(db, "100001", sysUUID, map[string]string{"description": "x"}); err == nil {
+		t.Fatal("Patch system role succeeded")
+	}
+	if _, err := Patch(db, "100001", created.UUID, map[string]string{"nope": "x"}); err == nil {
+		t.Fatal("Patch unsupported field succeeded")
+	}
+	if _, err := Update(db, "100001", "missing-uuid", "x", "", "", nil, allow); err == nil {
+		t.Fatal("Update missing uuid succeeded")
+	}
+	if _, err := Patch(db, "100001", "missing-uuid", map[string]string{"description": "x"}); err == nil {
+		t.Fatal("Patch missing uuid succeeded")
+	}
+
+	// Update with a new grant + resolveGrants unknown/disallowed.
+	if _, err := Update(db, "100001", created.UUID, "custom-new", "", "",
+		[]AccessIn{{Permission: "bad"}}, allow); err == nil {
+		t.Fatal("Update bad permission succeeded")
+	}
+	if _, err := Update(db, "100001", created.UUID, "custom-new", "", "",
+		[]AccessIn{{Permission: "sources:*:*"}}, allow); err == nil {
+		t.Fatal("Update disallowed app succeeded")
+	}
+	updated, err := Update(db, "100001", created.UUID, "custom-renamed", "Disp", "desc",
+		[]AccessIn{{
+			Permission: "cost-management:aws.account:read",
+			ResourceDefinitions: []access.ResourceDefinition{
+				{AttributeFilter: map[string]any{"key": "k2", "operation": "in", "value": "a,b"}},
+			},
+		}}, allow)
+	if err != nil {
+		t.Fatalf("Update with RDs: %v", err)
+	}
+	if updated.Name != "custom-renamed" || updated.DisplayName != "Disp" {
+		t.Errorf("updated = %+v", updated)
 	}
 }
 

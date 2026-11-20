@@ -2,10 +2,14 @@ package keycloak
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"rbac-go/internal/seed"
 	"rbac-go/internal/store"
@@ -347,6 +351,61 @@ func stubKeycloakGroups(t *testing.T, members []kcStubUser, admins []string) *ht
 	return httptest.NewServer(mux)
 }
 
+// TestSyncDiscoversSkipsGroupsWithoutOrgID: groups missing org_id attributes
+// (firstOf empty) and non-prefix names are ignored; empty OrgGroupPrefix
+// defaults to "org-".
+func TestSyncDiscoversSkipsGroupsWithoutOrgID(t *testing.T) {
+	db := testdb.Open(t)
+	if err := seed.Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "test-token"})
+	})
+	mux.HandleFunc("/admin/realms/onprem/groups", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "skip-name", "name": "other-100001", "attributes": map[string]any{
+				"org_id": []string{"100001"},
+			}},
+			{"id": "skip-attr", "name": "org-no-org", "attributes": map[string]any{}},
+			{"id": "skip-empty", "name": "org-empty", "attributes": map[string]any{
+				"org_id": []string{},
+			}},
+			{"id": "g-ok", "name": "org-100001", "attributes": map[string]any{
+				"org_id": []string{"100001"},
+				// no account_number → firstOf empty
+			}},
+		})
+	})
+	mux.HandleFunc("/admin/realms/onprem/groups/g-ok/members", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "kc-a", "username": "alice", "enabled": true},
+		})
+	})
+	mux.HandleFunc("/admin/realms/onprem/roles/org-admin/users", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	if err := Sync(db, Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "id", ClientSecret: "secret",
+		// empty OrgGroupPrefix → default "org-"
+		PruneOrphans: false,
+	}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tenants WHERE org_id='100001'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("tenant count = %d err=%v, want 1", n, err)
+	}
+	if _, ok := readPrincipal(t, db, "alice"); !ok {
+		t.Fatal("alice missing after sync of valid org group")
+	}
+}
+
 // TestSyncDiscoversOrgs: without --org, sync discovers org- groups, creates
 // the tenant, and syncs principals with no group assignment (platform/admin
 // defaults grant access, as in the Django script). The discovery path must
@@ -400,5 +459,326 @@ func TestSyncDiscoversOrgs(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM principals pr
 		JOIN tenants t ON t.id = pr.tenant_id WHERE t.org_id='100001'`).Scan(&count); err != nil || count != 2 {
 		t.Errorf("principal count = %d, err = %v, want alice and bob", count, err)
+	}
+}
+
+func listOrgPrincipals(t *testing.T, db *store.DB, org string) map[string]bool {
+	t.Helper()
+	rows, err := db.Query(`SELECT username FROM principals pr
+		JOIN tenants t ON t.id = pr.tenant_id WHERE t.org_id=?`, org)
+	if err != nil {
+		t.Fatalf("list principals: %v", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			t.Fatal(err)
+		}
+		out[strings.ToLower(u)] = true
+	}
+	return out
+}
+
+func seedSyncedTenant(t *testing.T, db *store.DB) {
+	t.Helper()
+	if err := seed.Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := seed.Bootstrap(db, "100001", "1111111", []string{"alice", "bob", "carol"}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+}
+
+func assertPrincipalsUnchanged(t *testing.T, db *store.DB, before map[string]bool) {
+	t.Helper()
+	after := listOrgPrincipals(t, db, "100001")
+	if len(after) != len(before) {
+		t.Fatalf("principal count changed %d -> %d (%v -> %v); sync must not half-prune",
+			len(before), len(after), before, after)
+	}
+	for u := range before {
+		if !after[u] {
+			t.Errorf("principal %q missing after failed sync", u)
+		}
+	}
+}
+
+// TestSyncFailsOnToken401: a 401 from the token endpoint aborts before prune.
+func TestSyncFailsOnToken401(t *testing.T) {
+	db := testdb.Open(t)
+	seedSyncedTenant(t, db)
+	before := listOrgPrincipals(t, db, "100001")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	err := Sync(db, Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "id", ClientSecret: "secret",
+		OrgID: "100001", Group: "CI Test Admin", PruneOrphans: true,
+	})
+	if err == nil {
+		t.Fatal("Sync succeeded on token 401, want error")
+	}
+	assertPrincipalsUnchanged(t, db, before)
+}
+
+// TestSyncFailsOnUsers401: token succeeds but users list returns 401.
+func TestSyncFailsOnUsers401(t *testing.T) {
+	db := testdb.Open(t)
+	seedSyncedTenant(t, db)
+	before := listOrgPrincipals(t, db, "100001")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "test-token"})
+	})
+	mux.HandleFunc("/admin/realms/onprem/roles/org-admin/users", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/admin/realms/onprem/users", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`unauthorized`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	err := Sync(db, Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "id", ClientSecret: "secret",
+		OrgID: "100001", Group: "CI Test Admin", PruneOrphans: true,
+	})
+	if err == nil {
+		t.Fatal("Sync succeeded on users 401, want error")
+	}
+	assertPrincipalsUnchanged(t, db, before)
+}
+
+// TestSyncFailsOnKeycloak5xx: 5xx from token or users aborts without prune.
+func TestSyncFailsOnKeycloak5xx(t *testing.T) {
+	db := testdb.Open(t)
+	seedSyncedTenant(t, db)
+	before := listOrgPrincipals(t, db, "100001")
+
+	for _, path := range []string{"token", "users"} {
+		t.Run(path, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+				if path == "token" {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "test-token"})
+			})
+			mux.HandleFunc("/admin/realms/onprem/roles/org-admin/users", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode([]map[string]any{})
+			})
+			mux.HandleFunc("/admin/realms/onprem/users", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`boom`))
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			err := Sync(db, Config{
+				BaseURL: srv.URL, Realm: "onprem",
+				ClientID: "id", ClientSecret: "secret",
+				OrgID: "100001", Group: "CI Test Admin", PruneOrphans: true,
+			})
+			if err == nil {
+				t.Fatalf("Sync succeeded on %s 5xx, want error", path)
+			}
+			assertPrincipalsUnchanged(t, db, before)
+		})
+	}
+}
+
+// TestSyncFailsOnEmptyToken: token JSON without access_token must fail cleanly.
+func TestSyncFailsOnEmptyToken(t *testing.T) {
+	db := testdb.Open(t)
+	seedSyncedTenant(t, db)
+	before := listOrgPrincipals(t, db, "100001")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"token_type": "bearer"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	err := Sync(db, Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "id", ClientSecret: "secret",
+		OrgID: "100001", PruneOrphans: true,
+	})
+	if err == nil {
+		t.Fatal("Sync succeeded with empty access_token, want error")
+	}
+	assertPrincipalsUnchanged(t, db, before)
+}
+
+// TestSyncFailsOnBrokenUsersJSON: truncated/invalid users payload aborts.
+func TestSyncFailsOnBrokenUsersJSON(t *testing.T) {
+	db := testdb.Open(t)
+	seedSyncedTenant(t, db)
+	before := listOrgPrincipals(t, db, "100001")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "test-token"})
+	})
+	mux.HandleFunc("/admin/realms/onprem/roles/org-admin/users", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/admin/realms/onprem/users", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"username":"alice",`)) // truncated JSON
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	err := Sync(db, Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "id", ClientSecret: "secret",
+		OrgID: "100001", Group: "CI Test Admin", PruneOrphans: true,
+	})
+	if err == nil {
+		t.Fatal("Sync succeeded on broken users JSON, want error")
+	}
+	assertPrincipalsUnchanged(t, db, before)
+}
+
+// TestSyncFailsOnTruncatedPagination: first page of 100 then 5xx on the next
+// page must not apply/prune a partial Keycloak view.
+func TestSyncFailsOnTruncatedPagination(t *testing.T) {
+	db := testdb.Open(t)
+	seedSyncedTenant(t, db)
+	before := listOrgPrincipals(t, db, "100001")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "test-token"})
+	})
+	mux.HandleFunc("/admin/realms/onprem/roles/org-admin/users", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/admin/realms/onprem/users", func(w http.ResponseWriter, r *http.Request) {
+		first := r.URL.Query().Get("first")
+		if first == "" || first == "0" {
+			page := make([]map[string]any, 0, 100)
+			for i := 0; i < 100; i++ {
+				page = append(page, map[string]any{"username": fmt.Sprintf("user%03d", i)})
+			}
+			_ = json.NewEncoder(w).Encode(page)
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`truncated page`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	err := Sync(db, Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "id", ClientSecret: "secret",
+		OrgID: "100001", Group: "CI Test Admin", PruneOrphans: true,
+	})
+	if err == nil {
+		t.Fatal("Sync succeeded on truncated pagination, want error")
+	}
+	assertPrincipalsUnchanged(t, db, before)
+}
+
+// TestConcurrentSyncDoesNotHalfPrune: overlapping Sync+PruneOrphans must end
+// at the Keycloak source of truth — never an empty or partial principal set.
+// File-backed SQLite with multiple conns + busy_timeout lets apply
+// transactions contend (testdb :memory: forces MaxOpenConns=1).
+func TestConcurrentSyncDoesNotHalfPrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rbac.db")
+	db, err := store.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(8)
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		t.Fatalf("busy_timeout: %v", err)
+	}
+	if err := store.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	seedSyncedTenant(t, db) // alice, bob, carol
+
+	enabled := true
+	users := []map[string]any{
+		{"id": "kc-alice", "username": "alice", "enabled": enabled},
+		{"id": "kc-bob", "username": "bob", "enabled": enabled},
+	}
+	const workers = 8
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/onprem/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "test-token"})
+	})
+	mux.HandleFunc("/admin/realms/onprem/roles/org-admin/users", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/admin/realms/onprem/users", func(w http.ResponseWriter, r *http.Request) {
+		// Small delay so applies from other workers can start overlapping.
+		time.Sleep(5 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(users)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "id", ClientSecret: "secret",
+		OrgID: "100001", Group: "CI Test Admin", PruneOrphans: true,
+	}
+
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			var syncErr error
+			for attempt := 0; attempt < 40; attempt++ {
+				syncErr = Sync(db, cfg)
+				if syncErr == nil || !strings.Contains(syncErr.Error(), "SQLITE_BUSY") {
+					break
+				}
+				time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+			}
+			errs <- syncErr
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Sync: %v", err)
+		}
+	}
+
+	after := listOrgPrincipals(t, db, "100001")
+	want := map[string]bool{"alice": true, "bob": true}
+	if len(after) != len(want) {
+		t.Fatalf("after concurrent sync principals = %v, want exactly %v (half-prune?)", after, want)
+	}
+	for u := range want {
+		if !after[u] {
+			t.Errorf("missing %q after concurrent sync: %v", u, after)
+		}
+	}
+	if after["carol"] {
+		t.Errorf("stale carol survived concurrent prune: %v", after)
 	}
 }

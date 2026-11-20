@@ -218,6 +218,39 @@ func TestBootstrapGrantsCostAdministrator(t *testing.T) {
 	}
 }
 
+// TestBootstrapRequiresSeededCostAdministrator: bootstrap looks up the
+// public Cost Administrator role; without Seed it must fail (not create a
+// half-wired org).
+func TestBootstrapRequiresSeededCostAdministrator(t *testing.T) {
+	db := testDB(t)
+	if err := Bootstrap(db, "100001", "acct", []string{"alice"}); err == nil {
+		t.Fatal("Bootstrap without Seed succeeded, want error")
+	}
+}
+
+// TestBootstrapLowercasesUsernames: usernames are stored lowercased like
+// Django's principal upsert path.
+func TestBootstrapLowercasesUsernames(t *testing.T) {
+	db := testDB(t)
+	if err := Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := Bootstrap(db, "100001", "acct", []string{"Alice", "BOB"}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM principals pr
+		JOIN tenants t ON t.id = pr.tenant_id
+		WHERE t.org_id='100001' AND pr.username IN ('alice','bob')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("lowercased principals = %d err=%v, want 2", n, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM principals pr
+		JOIN tenants t ON t.id = pr.tenant_id
+		WHERE t.org_id='100001' AND pr.username IN ('Alice','BOB')`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("mixed-case leftovers = %d, want 0", n)
+	}
+}
+
 // TestSeedCostPriceListRoles: operator-parity packaged roles for Cost Price
 // List Administrator/Viewer. They must be system, not admin_default, and
 // must not attach to Default admin access (unlike Cost Administrator /

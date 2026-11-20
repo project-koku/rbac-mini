@@ -78,6 +78,58 @@ func TestProcessACLs(t *testing.T) {
 	}
 }
 
+// TestApplyAccessNilAccess hits the early return when access is nil.
+func TestApplyAccessNilAccess(t *testing.T) {
+	got := ApplyAccess(nil)
+	if len(got["aws.account"]["read"]) != 0 {
+		t.Errorf("nil access aws.account.read = %v, want empty", got["aws.account"]["read"])
+	}
+}
+
+// TestProcessACLsResourceDefinitionShapes covers extractResources branches:
+// empty RDs → ["*"], equal with empty value skipped, "in" as CSV string and
+// as []any, and equal with a real value.
+func TestProcessACLsResourceDefinitionShapes(t *testing.T) {
+	entries := []access.Entry{
+		{Permission: "cost-management:aws.account:read"}, // no RDs → *
+		rd("cost-management:gcp.account:read", "equal", ""),
+		rd("cost-management:gcp.project:read", "equal", "proj-1"),
+		rd("cost-management:azure.subscription_guid:read", "in", "a,b"),
+		{
+			Permission: "cost-management:openshift.cluster:read",
+			ResourceDefinitions: []access.ResourceDefinition{
+				{AttributeFilter: map[string]any{
+					"key": "cost-management.openshift.cluster", "operation": "in",
+					"value": []any{"c1", "c2"},
+				}},
+			},
+		},
+	}
+	got := ProcessACLs(entries)
+
+	aws := got["aws.account"]
+	if len(aws) != 1 || len(aws[0].Resources) != 1 || aws[0].Resources[0] != "*" {
+		t.Errorf("aws.account (no RDs) = %v, want [{read [*]}]", aws)
+	}
+	// equal with empty value contributes no resources (koku skips the value).
+	gcpEmpty := got["gcp.account"]
+	if len(gcpEmpty) != 1 || len(gcpEmpty[0].Resources) != 0 {
+		t.Errorf("gcp.account (empty equal) = %v, want [{read []}]", gcpEmpty)
+	}
+	gcp := got["gcp.project"]
+	if len(gcp) != 1 || len(gcp[0].Resources) != 1 || gcp[0].Resources[0] != "proj-1" {
+		t.Errorf("gcp.project = %v, want [{read [proj-1]}]", gcp)
+	}
+	az := got["azure.subscription_guid"]
+	if len(az) != 1 || len(az[0].Resources) != 2 {
+		t.Fatalf("azure = %v, want 2 resources from CSV", az)
+	}
+	ocp := got["openshift.cluster"]
+	if len(ocp) != 1 || len(ocp[0].Resources) != 2 {
+		t.Fatalf("openshift.cluster = %v, want 2 resources from []any", ocp)
+	}
+}
+
 // TestApplyAccessWildcard mirrors koku wildcard handling: a single * ACL
 // with operation * expands to every resource bucket (write where available,
 // else read) and compacts to ["*"].

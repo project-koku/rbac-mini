@@ -1,88 +1,107 @@
-# rbac-go agent guide
+# rbac-mini – agent guide
 
-## STANDING ORDER — do NOT create Jira tasks
+The single always-on instruction file for every coding agent working in this
+repository.
 
-**Do not create or ask to create any Jira issue.** Tickets will be opened later
-in bulk, only when explicitly requested. Local tracking:
-[`.cursor/docs/collected-questions.md`](.cursor/docs/collected-questions.md);
-rule: [`.cursor/rules/no-jira-create.mdc`](.cursor/rules/no-jira-create.mdc).
+`rbac-mini` (module `rbac-go`) is an open-source Go replacement for the v1
+subset of insights-rbac that on-prem Cost Management needs. Its primary
+consumer is the **Cost Management Service Operator**, which can embed and run
+this binary:
 
-`rbac-go` is a single-binary Go replacement for the v1 subset of
-insights-rbac that koku and the on-prem UI use. It is a separate git
-repository, checked out inside `insights-rbac/`; the parent
-[AGENTS.md](../AGENTS.md) still applies where it does not conflict with this
-file.
+- Operator: [project-koku/koku-service-operator](https://github.com/project-koku/koku-service-operator)
+- Contract and swap notes: [doc/SPEC.md](doc/SPEC.md), [doc/OPERATOR-SWAP.md](doc/OPERATOR-SWAP.md)
 
-## Layout
+> **Versions:** Check [`go.mod`](go.mod) — do not rely on version numbers in docs.
 
-| Path | Content |
-|---|---|
-| [cmd/rbac-go/](cmd/rbac-go/) | `serve`, `migrate`, `seed`, `bootstrap`, `sync` entry points |
-| [internal/access/](internal/access/) | The `GET /access/` hot path |
-| [internal/contract/](internal/contract/) | koku's permission-string normalization, ported |
-| [internal/store/](internal/store/) | Portable SQL schema, SQLite and Postgres dialects, pool settings |
-| [internal/server/](internal/server/) | HTTP handlers and routes |
-| [doc/](doc/) | Contract, findings, operator swap, live-cluster runbook, load test |
-| [scripts/loadtest/](scripts/loadtest/) | Reproducible load test, one results directory per stage |
+## Quick reference
 
-## Commands
-
-```bash
-make test-sqlite     # default suite, :memory: SQLite
-make test-postgres   # same suite against a scratch Postgres 16
-make lint            # go vet + golangci-lint (v2.15.0)
+**Key commands:**
+```
+make test-sqlite       # default suite (:memory: SQLite)
+make test-postgres     # same suite against scratch Postgres 16
+make test-cover        # product coverage; fails below 90%
+make lint              # go vet + golangci-lint
 make build
 ```
 
-`make test-postgres` expects a scratch Postgres on `127.0.0.1:55432`; see the
-comment at the top of the [Makefile](Makefile). Both suites and the linter
-must pass before a commit is pushed, because CI runs all three.
+`make test-postgres` expects scratch Postgres on `127.0.0.1:55432`; see the
+comment at the top of the [Makefile](Makefile).
 
-## Documentation rules
+**Project structure:**
+```
+cmd/rbac-go/           # serve, migrate, seed, bootstrap, sync
+internal/access/       # GET /access/ hot path
+internal/server/       # HTTP handlers and routes
+internal/store/        # portable SQL schema, SQLite + Postgres
+internal/keycloak/     # Keycloak → principals sync
+internal/seed/         # catalog / bootstrap seed data
+internal/contract/     # permission-string normalization (ported from koku)
+doc/                   # SPEC, OpenAPI subset, operator swap, load test
+scripts/loadtest/      # local stress/latency tooling (not product coverage)
+scripts/coverage.sh    # product coverage measurement (CI + make test-cover)
+```
 
-**Every reference to another document or source file must be a real link.**
-A file name in backticks is not a link, even when the path is obvious.
+**Tests:** Prefer real store/HTTP behavior via [`internal/testdb`](internal/testdb/)
+and `httptest` over mocks. Product coverage must stay **≥ 90%** of
+`./cmd/...` and `./internal/...` excluding [`internal/testdb`](internal/testdb/).
+[`scripts/loadtest/`](scripts/loadtest/) is out of scope for the gate.
 
-* In this repository, use a relative link:
-  `[store.go](../internal/store/store.go)`.
-* Outside it, use the canonical upstream URL, with a line anchor when a
-  specific range is meant:
-  `[view.py:192-221](https://github.com/RedHatInsights/insights-rbac/blob/master/rbac/management/access/view.py#L192-L221)`.
-* Generated artifacts are linked where they live, for example
-  `[REPORT.md](../scripts/loadtest/results/go-pool/REPORT.md)`.
-* When a target has no public location (an untracked local note), say so in
-  the sentence instead of inventing a link.
+```bash
+make test-cover
+COVERAGE_THRESHOLD=95 make test-cover   # optional tighter local check
+```
 
-CI runs `lychee --offline` over `doc/**/*.md` and [README.md](README.md). A
-missing local link target fails the build; `lychee --offline doc/` is the
-quick local check.
+## Critical constraints
 
-Keep the documents separate by purpose: [doc/SPEC.md](doc/SPEC.md) is the
-contract, [doc/LOADTEST.md](doc/LOADTEST.md) is the measurement record,
-[doc/OPERATOR-SWAP.md](doc/OPERATOR-SWAP.md) is the deployment guide.
+1. **Portable SQL** — `?` placeholders only; the store rebinds for Postgres.
+   No `DISTINCT ON`, `RETURNING`, JSON operators, or `ILIKE`.
+2. **Tenant isolation** — every query is tenant-scoped. Never return another
+   tenant's rows.
+3. **Access defaults** — platform-default groups (tenant + public) for everyone;
+   admin-default only for org admins. Inactive principals (`is_active=0`) get
+   an empty access list.
+4. **Operator compatibility** — keep env vars, migrate/seed/sync jobs, probes,
+   and image embed aligned with how
+   [koku-service-operator](https://github.com/project-koku/koku-service-operator)
+   deploys Mini. Do not reintroduce SaaS-only insights-rbac surface (Kessel,
+   Celery, Kafka, Valkey as a required cache).
+5. **API / docs** — public surface changes must update [doc/SPEC.md](doc/SPEC.md)
+   and [doc/openapi.v1-subset.json](doc/openapi.v1-subset.json).
+6. **Timestamps** — fixed-width UTC TEXT via `store.Now()`; set `created` /
+   `modified` where the v1 shape has them.
+7. **List filters** — mirror Django (`name_match=partial|exact`, case-insensitive);
+   validate enums and return 400 instead of ignoring them.
 
-## Load-test results
+## When modifying...
 
-Results are committed, one directory per stage under
-[scripts/loadtest/results/](scripts/loadtest/results/). Never edit or re-run
-the `baseline/` stage: later stages are measured against it. To add a stage,
-use the existing entry points and note the measured commit in `ENV.txt`; see
-[doc/LOADTEST.md](doc/LOADTEST.md#reproduce).
+| When you modify... | Also update... |
+|---|---|
+| HTTP handlers / routes | tests under `internal/server/`; OpenAPI subset + SPEC if the public contract changes |
+| `internal/store` schema or dialects | migrate tests; both SQLite and Postgres suites |
+| `internal/access` | persona/access tests; remember inactive + tenant defaults |
+| Seed catalog / roles | `internal/seed` tests; note operator seed Job impact |
+| Keycloak sync | `internal/keycloak` failure-mode tests (no half-prune) |
+| Env vars / CLI flags | operator docs in [doc/OPERATOR-SWAP.md](doc/OPERATOR-SWAP.md) |
+| Docs under `doc/` | keep real links (CI runs `lychee --offline`); do not invent paths |
+| Load-test stages | never rewrite `scripts/loadtest/results/baseline/`; see [doc/LOADTEST.md](doc/LOADTEST.md) |
 
-## Code conventions
+## Agent behavior
 
-* Portable SQL only: write `?` placeholders and let the store rebind them for
-  Postgres. No `DISTINCT ON`, `RETURNING`, JSON operators or `ILIKE`.
-* Timestamps are fixed-width UTC TEXT via `store.Now()`; set `created` on
-  insert and `modified` on create/update, and return both where the v1 shape
-  has them (roles, groups).
-* List filters mirror Django: `name_match=partial|exact` (partial default),
-  case-insensitive matching, and explicit default-group probes override the
-  default exclusion. Validate enums and return 400 instead of ignoring them.
-* Every query is tenant-scoped. Never return rows from another tenant.
-* `internal/access` always includes the public tenant's platform-default
-  groups; admin-default groups only for org admins.
-* No cache process. Valkey/Redis environment variables are accepted as
-  no-ops so the Helm chart's assertions keep passing.
-* Conventional commit messages (`fix(store): ...`), author
-  `Martin Povolny <mpovolny@redhat.com>`.
+**Suggested practice — TDD:** when asked to implement a feature or bug fix,
+prefer writing failing tests first, then production code until the tests pass.
+That keeps quality high, protects the 90% coverage gate, and reduces
+hallucinated APIs or behavior. It is a strong default for agents in this repo,
+not a hard block if a human chooses another workflow.
+
+**Ask first when:** the change spans many packages or unclear product
+behavior; a failing test may mean wrong expectations rather than a bug;
+operator or API contract impact is ambiguous.
+
+**Proceed when:** the task is scoped; the fix follows an established pattern;
+acceptance criteria are clear.
+
+**Never:** weaken tests to match broken code; skip assertions to green CI;
+silently ignore tenant scope; commit secrets or personal machine paths.
+
+**Always:** fix root causes; run the relevant `make test-*` / `make test-cover`
+checks before claiming done; prefer portable SQL and tenant-safe queries.

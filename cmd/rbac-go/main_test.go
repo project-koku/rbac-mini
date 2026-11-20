@@ -241,6 +241,128 @@ func TestSyncEnvFallback(t *testing.T) {
 	}
 }
 
+// TestEnvBoolAndOpenDatabase covers envBool true/false/default and the
+// sqlite:// empty/:memory: + unsupported DATABASE_URL branches.
+func TestEnvBoolAndOpenDatabase(t *testing.T) {
+	t.Setenv("RBAC_TEST_BOOL", "yes")
+	if !envBool("RBAC_TEST_BOOL", false) {
+		t.Fatal("envBool(yes) = false, want true")
+	}
+	t.Setenv("RBAC_TEST_BOOL", "0")
+	if envBool("RBAC_TEST_BOOL", true) {
+		t.Fatal("envBool(0) = true, want false")
+	}
+	t.Setenv("RBAC_TEST_BOOL", "")
+	if !envBool("RBAC_TEST_BOOL", true) {
+		t.Fatal("envBool(empty, def=true) = false, want true")
+	}
+
+	db, err := openDatabase("sqlite://")
+	if err != nil {
+		t.Fatalf("sqlite:// empty: %v", err)
+	}
+	_ = db.Close()
+	db, err = openDatabase("sqlite://:memory:")
+	if err != nil {
+		t.Fatalf("sqlite://:memory:: %v", err)
+	}
+	_ = db.Close()
+	if _, err := openDatabase("mysql://nope"); err == nil {
+		t.Fatal("mysql:// succeeded, want error")
+	}
+	// OpenPostgres only dials on first use; sql.Open succeeds and covers the branch.
+	pg, err := openDatabase("postgres://u:p@127.0.0.1:1/db?sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgres:// open: %v", err)
+	}
+	_ = pg.Close()
+	pg, err = openDatabase("postgresql://u:p@127.0.0.1:1/db?sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgresql:// open: %v", err)
+	}
+	_ = pg.Close()
+}
+
+// TestResolveDatabaseURLMoreBranches: default port, user without password,
+// and the sqlite://./rbac.db fallback when no DATABASE_* is set.
+func TestResolveDatabaseURLMoreBranches(t *testing.T) {
+	get := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	got := resolveDatabaseURL(get(map[string]string{
+		"DATABASE_HOST": "db", "DATABASE_NAME": "n", "DATABASE_USER": "u",
+	}))
+	want := "postgres://u@db:5432/n?sslmode=disable"
+	if got != want {
+		t.Errorf("no port/password = %q, want %q", got, want)
+	}
+	got = resolveDatabaseURL(get(map[string]string{
+		"DATABASE_HOST": "db", "DATABASE_PORT": "5432", "DATABASE_NAME": "n",
+	}))
+	want = "postgres://db:5432/n?sslmode=disable"
+	if got != want {
+		t.Errorf("no user = %q, want %q", got, want)
+	}
+	if got := resolveDatabaseURL(get(map[string]string{})); got != "sqlite://./rbac.db" {
+		t.Errorf("empty env = %q, want sqlite://./rbac.db", got)
+	}
+}
+
+// TestStartServerWithSeedAndBadListen: withSeed migrates+seeds; a bad listen
+// address fails after open and closes the DB.
+func TestStartServerWithSeedAndBadListen(t *testing.T) {
+	dsn := "sqlite://" + filepath.Join(t.TempDir(), "seeded.db")
+	addr, stop, err := startServerWith(dsn, "127.0.0.1:0", true)
+	if err != nil {
+		t.Fatalf("startServerWith seed: %v", err)
+	}
+	defer stop()
+	resp, err := http.Get("http://" + addr + "/api/rbac/v1/status/")
+	if err != nil {
+		t.Fatalf("GET status: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	db, err := openDatabase(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM roles WHERE name='Cost Administrator'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("Cost Administrator rows = %d err=%v, want 1", n, err)
+	}
+
+	_, _, err = startServerWith(dsn, "127.0.0.1:99999", false) // port out of range
+	if err == nil {
+		t.Fatal("bad listen addr succeeded, want error")
+	}
+}
+
+// TestRunSyncAndBootstrapFlagErrors hits flag.Parse error paths and
+// openDatabase failures for migrate/seed/bootstrap/sync.
+func TestRunSyncAndBootstrapFlagErrors(t *testing.T) {
+	if err := run([]string{"sync", "-h"}, "sqlite://:memory:"); err != flag.ErrHelp {
+		t.Errorf("sync -h: err = %v, want flag.ErrHelp", err)
+	}
+	if err := run([]string{"bootstrap", "-h"}, "sqlite://:memory:"); err != flag.ErrHelp {
+		t.Errorf("bootstrap -h: err = %v, want flag.ErrHelp", err)
+	}
+	bad := "bogus://nope"
+	for _, args := range [][]string{
+		{"migrate"},
+		{"seed"},
+		{"bootstrap", "--org", "1", "--users", "a"},
+		{"sync", "--keycloak-url", "http://x", "--realm", "r", "--org", "1"},
+	} {
+		if err := run(args, bad); err == nil {
+			t.Errorf("%v with bad DSN succeeded, want error", args)
+		}
+	}
+}
+
 // TestMaybeFIPSStatus pins the operator verify-fips contract: --fips-status
 // prints JSON and does not start the server.
 func TestMaybeFIPSStatus(t *testing.T) {

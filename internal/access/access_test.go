@@ -258,3 +258,22 @@ func TestGetAccessIncludesAdminDefaultForOrgAdmin(t *testing.T) {
 		t.Errorf("org admin missing admin_default grant: %+v", got)
 	}
 }
+
+// TestAccessForInactivePrincipal: disabled principals must not keep receiving
+// grants while a JWT may still be valid — a silent privilege path after sync
+// marks someone inactive. Expect deny (empty list).
+func TestAccessForInactivePrincipal(t *testing.T) {
+	db := testDB(t)
+	seedFixture(t, db)
+	if _, err := db.Exec(`UPDATE principals SET is_active=0 WHERE username='test_user'`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Query(db, "100001", "test_user", []string{"app"}, false)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("inactive principal still received grants: %+v (want empty deny list)", got)
+	}
+}

@@ -81,7 +81,11 @@ jobs:
 
       - name: Run tests (sqlite)
         if: matrix.backend == 'sqlite'
-        run: go test -race -count=1 -timeout 300s -coverprofile=coverage.out ./...
+        # Product packages only: exclude internal/testdb (test harness).
+        # scripts/loadtest is not a Go package in this module.
+        run: |
+          COVERPKG="$(go list ./cmd/... ./internal/... | grep -v '/internal/testdb$' | paste -sd, -)"
+          go test -race -count=1 -timeout 300s -coverprofile=coverage.out -coverpkg="$COVERPKG" ./...
 
       - name: Run tests (postgres)
         if: matrix.backend == 'postgres'
@@ -89,14 +93,27 @@ jobs:
           RBAC_TEST_POSTGRES: postgres://postgres:postgres@localhost:5434/rbac_test?sslmode=disable
         # testdb creates/drops a database per test, so the bootstrap role
         # must be a superuser (postgres default is).
-        run: go test -race -count=1 -timeout 300s -coverprofile=coverage.out -p 1 ./...
+        run: |
+          COVERPKG="$(go list ./cmd/... ./internal/... | grep -v '/internal/testdb$' | paste -sd, -)"
+          go test -race -count=1 -timeout 300s -coverprofile=coverage.out -coverpkg="$COVERPKG" -p 1 ./...
 
       - name: Coverage summary
         run: |
-          echo '### Test Coverage' >> $GITHUB_STEP_SUMMARY
+          echo '### Test Coverage (product packages; excludes internal/testdb)' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          go tool cover -func=coverage.out | grep -E 'total:|internal/' >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | grep -E 'total:|internal/|cmd/' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # Gate on the SQLite product profile. Threshold starts at 90% so it can
+      # be raised toward 95% once remaining product gaps close.
+      - name: Coverage gate
+        if: matrix.backend == 'sqlite'
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ { gsub(/%/,"",$NF); print $NF }')
+          echo "Product coverage: ${total}% (threshold: 90%)"
+          echo "Product coverage: **${total}%** (threshold: 90%)" >> "$GITHUB_STEP_SUMMARY"
+          python3 -c "import sys; t=float(sys.argv[1]); sys.exit(0 if t >= 90.0 else 1)" "$total" \
+            || { echo "::error::Coverage ${total}% is below the 90% threshold"; exit 1; }
 
   validate:
     name: Validate

@@ -88,6 +88,31 @@ func TestParseServiceAccount(t *testing.T) {
 	}
 }
 
+// TestParseServiceAccountEmptyUsername falls back to service-account-{client_id}.
+func TestParseServiceAccountEmptyUsername(t *testing.T) {
+	id := map[string]any{
+		"identity": map[string]any{
+			"org_id": "100001",
+			"type":   "ServiceAccount",
+			"service_account": map[string]any{
+				"client_id": "cid-empty",
+				"username":  "",
+			},
+		},
+	}
+	raw, err := json.Marshal(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Parse(base64.StdEncoding.EncodeToString(raw))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Username != "service-account-cid-empty" {
+		t.Errorf("Username = %q, want service-account-cid-empty", got.Username)
+	}
+}
+
 func TestParseInvalid(t *testing.T) {
 	for name, header := range map[string]string{
 		"not base64":       "!!!",

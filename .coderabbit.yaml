@@ -1,0 +1,203 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+# Concise, senior-engineer tone — matches how the Cost team reviews.
+tone_instructions: >
+  Be direct and constructive. Prefer fewer, high-signal comments.
+  Explain why for rbac-mini risks (tenant isolation, portable SQL,
+  access defaults, operator embed/env compatibility).
+  Do not nitpick style already enforced by gofmt / go vet / golangci-lint.
+
+inheritance: true
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: >-
+    Summarize impact on the GET /access/ hot path, tenant isolation,
+    Keycloak sync, seed catalog, and koku-service-operator deploy/embed
+    compatibility. Mention COST-xxxx when the PR references them.
+    Skip generated coverage artifacts and load-test result churn.
+  poem: false
+  in_progress_fortune: false
+  collapse_walkthrough: true
+  sequence_diagrams: true
+  estimate_code_review_effort: false
+  assess_linked_issues: true
+  related_prs: true
+  suggested_labels: false
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  enable_prompt_for_ai_agents: true
+  review_details: false
+
+  slop_detection:
+    enabled: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 2 # Run "@coderabbitai review" to force a review
+    ignore_title_keywords:
+      - WIP
+      - DO NOT MERGE
+      - "[WIP]"
+
+  path_filters:
+    # Noise / non-reviewable artifacts
+    - "!**/go.sum"
+    - "!**/coverage.out"
+    - "!**/coverage*.out"
+    - "!**/*.db"
+    - "!scripts/loadtest/results/**"
+    - "!.cursor/**"
+
+  path_instructions:
+    - path: "**/*.go"
+      instructions: |
+        Focus on correctness and rbac-mini architecture risks, not style
+        (gofmt / go vet / golangci-lint handle style).
+        MUST flag:
+        - Queries missing tenant (org) scope / cross-tenant leaks
+        - Non-portable SQL (DISTINCT ON, RETURNING, JSON operators, ILIKE,
+          $n placeholders instead of ? with store rebind)
+        - Access path regressions: platform-default / admin-default rules,
+          inactive principals (is_active=0) still receiving grants
+        - Secrets, credentials, or hardcoded endpoints
+        Prefer real store/HTTP tests (testdb, httptest) over weak mocks.
+        Do not suggest reintroducing Valkey/Redis as a required cache,
+        Kessel, Celery, or Kafka for this binary.
+
+    - path: "internal/access/**/*.go"
+      instructions: |
+        Hot path for koku permission checks. Flag missing inactive-principal
+        deny, missing public/tenant platform-default inclusion, and admin-default
+        granted to non-admins. Keep portable SQL.
+
+    - path: "internal/store/**/*.go"
+      instructions: |
+        Schema and dialect layer. Flag SQLite/Postgres drift, missing migrate
+        coverage, and pool settings that would break operator multi-replica
+        Postgres budgets without documentation.
+
+    - path: "internal/server/**/*.go"
+      instructions: |
+        HTTP API surface. Flag contract drift vs doc/SPEC.md and
+        doc/openapi.v1-subset.json, weak error mapping (unique → 400),
+        and missing identity / validation 400 paths.
+
+    - path: "internal/keycloak/**/*.go"
+      instructions: |
+        Sync must fail cleanly on Keycloak errors and must not half-prune
+        principals. Flag prune-on-partial-fetch and missing profile/org-admin
+        persistence.
+
+    - path: "internal/seed/**/*.go"
+      instructions: |
+        Seed catalog is compiled into the binary the operator runs. Flag
+        non-idempotent seed, wrong admin_default / platform_default flags,
+        and permission grants that disagree with on-prem UI / operator needs.
+
+    - path: "cmd/rbac-go/**/*.go"
+      instructions: |
+        CLI entrypoints used by operator Jobs (migrate, seed, sync, serve).
+        Flag env-var parsing that would break the Helm/operator chart
+        contract and missing fail-fast on bad DSN / Keycloak config.
+
+    - path: "**/*_test.go"
+      instructions: |
+        Flag weak assertions, tests that only assert err == nil, skipped
+        tests used to hide failures, and mocks that avoid the real store
+        when testdb would work. Prefer table-driven HTTP and tenant
+        isolation cases.
+
+    - path: "doc/**/*.md"
+      instructions: |
+        Every cross-reference must be a real relative or upstream link
+        (CI lychee --offline). Flag invented paths and SPEC/OpenAPI drift
+        when behavior changed in the same PR.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Flag unpinned actions, excessive GITHUB_TOKEN permissions, secrets
+        in logs, and coverage gates that include internal/testdb or
+        scripts/loadtest.
+
+    - path: "scripts/loadtest/**"
+      instructions: |
+        Local tooling only. Do not treat as product coverage. Never suggest
+        rewriting scripts/loadtest/results/baseline/.
+
+  pre_merge_checks:
+    title:
+      mode: warning
+      requirements: >
+        Prefer conventional commits (fix(store): … / test(access): …) or
+        '[COST-####] Short description' when a Jira key exists.
+        Imperative mood, under ~72 characters.
+    description:
+      mode: warning
+    issue_assessment:
+      mode: warning
+    docstrings:
+      mode: "off"
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false   # TDD / local agent flow owns tests; keep CR suggestions focused
+    autofix:
+      enabled: true
+    simplify:
+      enabled: false
+
+  tools:
+    gitleaks:
+      enabled: true
+    semgrep:
+      enabled: true
+    shellcheck:
+      enabled: true
+    osvScanner:
+      enabled: false
+    oasdiff:
+      enabled: false
+    ruff:
+      enabled: false
+    pylint:
+      enabled: false
+    flake8:
+      enabled: false
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - files: "AGENTS.md"
+        applyTo: "**/*"
+      - files: "doc/SPEC.md"
+        applyTo: "internal/**/*.go"
+      - files: "doc/OPERATOR-SWAP.md"
+        applyTo: "{cmd,internal}/**/*.go"
+      - files: "doc/openapi.v1-subset.json"
+        applyTo: "internal/server/**/*.go"
+  learnings:
+    scope: local
+  jira:
+    # Public OSS: keep disabled so internal Jira does not leak into reviews.
+    usage: disabled
+    project_keys:
+      - COST
+
+chat:
+  auto_reply: true
+  art: false
+  allow_non_org_members: true

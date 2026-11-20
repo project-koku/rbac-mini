@@ -180,11 +180,14 @@ func ensureGroupPolicy(tx *store.Tx, groupID, tenantID int64, groupName string) 
 // AssignRoles grants roles to a group via its policy.
 func AssignRoles(db *store.DB, orgID, groupUUID string, roleUUIDs []string) error {
 	var groupID, tenantID int64
-	var ad int
-	if err := db.QueryRow(`SELECT g.id, g.tenant_id, g.admin_default FROM groups g
+	var pd, ad int
+	if err := db.QueryRow(`SELECT g.id, g.tenant_id, g.platform_default, g.admin_default FROM groups g
 		JOIN tenants t ON t.id = g.tenant_id
-		WHERE g.uuid = ? AND t.org_id = ?`, groupUUID, orgID).Scan(&groupID, &tenantID, &ad); err != nil {
+		WHERE g.uuid = ? AND t.org_id = ?`, groupUUID, orgID).Scan(&groupID, &tenantID, &pd, &ad); err != nil {
 		return err
+	}
+	if pd != 0 {
+		return fmt.Errorf("default access cannot be modified")
 	}
 	if ad != 0 {
 		return fmt.Errorf("default admin access cannot be modified")
@@ -220,11 +223,14 @@ func groupNameOf(tx *store.Tx, groupID int64) string {
 // RemoveRoles detaches roles from all of the group's policies.
 func RemoveRoles(db *store.DB, orgID, groupUUID string, roleUUIDs []string) error {
 	var groupID int64
-	var ad int
-	if err := db.QueryRow(`SELECT g.id, g.admin_default FROM groups g
+	var pd, ad int
+	if err := db.QueryRow(`SELECT g.id, g.platform_default, g.admin_default FROM groups g
 		JOIN tenants t ON t.id = g.tenant_id
-		WHERE g.uuid = ? AND t.org_id = ?`, groupUUID, orgID).Scan(&groupID, &ad); err != nil {
+		WHERE g.uuid = ? AND t.org_id = ?`, groupUUID, orgID).Scan(&groupID, &pd, &ad); err != nil {
 		return err
+	}
+	if pd != 0 {
+		return fmt.Errorf("default access cannot be modified")
 	}
 	if ad != 0 {
 		return fmt.Errorf("default admin access cannot be modified")

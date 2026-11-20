@@ -23,6 +23,8 @@ type Entry struct {
 // Query returns the access list for username in orgID filtered to the given
 // applications (exact match; empty means all applications). Unknown principal
 // or tenant yields an empty list and no error (koku maps [] to deny).
+// Inactive principals (is_active=0) also yield an empty list so a stale JWT
+// cannot keep grants after Keycloak marks the user disabled.
 //
 // Group scope mirrors Django's querysets: the principal's own tenant groups
 // plus platform_default groups of the tenant AND the public tenant (the
@@ -59,7 +61,7 @@ JOIN roles r ON r.id = prl.role_id
 JOIN access a ON a.role_id = r.id
 JOIN permissions p ON p.id = a.permission_id
 LEFT JOIN resource_definitions rd ON rd.access_id = a.id
-WHERE t.org_id = ? AND pr.username = ?` + placeholders + `
+WHERE t.org_id = ? AND pr.username = ? AND pr.is_active = 1` + placeholders + `
 ORDER BY p.permission`
 	args := make([]any, 0, len(applications)+2)
 	args = append(args, orgID, strings.ToLower(username))

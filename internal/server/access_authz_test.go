@@ -80,6 +80,13 @@ func TestAccessUsernameOverrideRequiresOrgAdmin(t *testing.T) {
 		t.Errorf("non-admin ?username= override stripped caller's grants: %v", nonAdminOverride)
 	}
 
+	// Peer calling ?username=test_user must not receive the privileged ACL
+	// either (override ignored → peer keeps their own empty app grants).
+	peerOverride := perms(peerHeader, "?application=app&limit=100&username=test_user")
+	if hasApp(peerOverride) {
+		t.Errorf("peer ?username=test_user leaked app:*:*: %v", peerOverride)
+	}
+
 	// Org-admin may resolve peer's ACL (empty for app).
 	adminOverride := perms(adminHeader, "?application=app&limit=100&username=peer_user")
 	if hasApp(adminOverride) {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,19 +131,37 @@ func TestAccessOrderByUsesParts(t *testing.T) {
 // for both the clamp-to-zero path (offset < limit) and the positive path.
 func TestPrincipalsPaginationPreviousLink(t *testing.T) {
 	s, header := testServerSeeded(t)
-	for _, q := range []string{
-		"limit=1&offset=0&status=all",
-		"limit=1&offset=1&status=all",
-	} {
-		req := httptest.NewRequest(http.MethodGet, "/api/rbac/v1/principals/?"+q, nil)
+	cases := []struct {
+		q        string
+		wantPrev bool // false → JSON null; true → link containing offset=0
+	}{
+		{"limit=1&offset=0&status=all", false},
+		{"limit=1&offset=1&status=all", true},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/rbac/v1/principals/?"+tc.q, nil)
 		req.Header.Set("X-Rh-Identity", header)
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: status = %d body %s", q, rec.Code, rec.Body.String())
+			t.Fatalf("%s: status = %d body %s", tc.q, rec.Code, rec.Body.String())
 		}
-		if !strings.Contains(rec.Body.String(), `"previous"`) {
-			t.Fatalf("%s: missing links.previous in %s", q, rec.Body.String())
+		var body struct {
+			Links struct {
+				Previous *string `json:"previous"`
+			} `json:"links"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode: %v", tc.q, err)
+		}
+		if tc.wantPrev {
+			if body.Links.Previous == nil || !strings.Contains(*body.Links.Previous, "offset=0") {
+				t.Fatalf("%s: want previous → offset=0, got %v", tc.q, body.Links.Previous)
+			}
+			continue
+		}
+		if body.Links.Previous != nil {
+			t.Fatalf("%s: want previous=null, got %q", tc.q, *body.Links.Previous)
 		}
 	}
 }

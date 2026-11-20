@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -52,8 +53,15 @@ func TestAccessPreviousLink(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"previous"`) {
-		t.Fatalf("missing previous in %s", rec.Body.String())
+	var body struct {
+		Links map[string]*string `json:"links"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	prev := body.Links["previous"]
+	if prev == nil || !strings.Contains(*prev, "offset=0") {
+		t.Fatalf("want previous → offset=0, got %v (body %s)", prev, rec.Body.String())
 	}
 }
 
@@ -131,11 +139,8 @@ func TestClosedDBUnexpectedErrors(t *testing.T) {
 			req.Header.Set("X-Rh-Identity", header)
 			rec := httptest.NewRecorder()
 			s.ServeHTTP(rec, req)
-			if rec.Code != http.StatusInternalServerError && rec.Code != http.StatusBadRequest {
-				// Some paths may still 401/400; accept 500 as the coverage target.
-				if rec.Code < 400 {
-					t.Fatalf("status = %d, want error status (body: %s)", rec.Code, rec.Body.String())
-				}
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
 			}
 		})
 	}

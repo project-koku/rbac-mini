@@ -2,11 +2,11 @@
 language: en-US
 
 # Concise, senior-engineer tone — matches how the Cost team reviews.
+# Keep ≤250 chars (CodeRabbit schema limit on tone_instructions).
 tone_instructions: >
-  Be direct and constructive. Prefer fewer, high-signal comments.
-  Explain why for rbac-mini risks (tenant isolation, portable SQL,
-  access defaults, operator embed/env compatibility).
-  Do not nitpick style already enforced by gofmt / go vet / golangci-lint.
+  Be direct and constructive; prefer high-signal comments. Explain
+  rbac-mini risks (tenant isolation, portable SQL, access defaults,
+  operator embed/env). Skip style covered by gofmt/vet/golangci-lint.
 
 inheritance: true
 

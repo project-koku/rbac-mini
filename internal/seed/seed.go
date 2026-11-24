@@ -12,21 +12,31 @@ import (
 // rbac_seed/data/*.roles.json admin_default roles koku needs:
 // cost-management for the UI/API, sources for the Integrations tab).
 // These attach to public "Default admin access" via seedDefaultAdminGroup.
-var adminRoles = []struct{ name, permission string }{
-	{"Cost Administrator", "cost-management:*:*"},
-	{"Sources administrator", "sources:*:*"},
+// description matches operator JSON for the UI Roles table column.
+var adminRoles = []struct{ name, permission, description string }{
+	{
+		name:        "Cost Administrator",
+		permission:  "cost-management:*:*",
+		description: "Perform any available operation on cost management resources.",
+	},
+	{
+		name:        "Sources administrator",
+		permission:  "sources:*:*",
+		description: "Perform any available operation on any source.",
+	},
 }
 
 // packagedRoles are operator system roles that are NOT admin_default and must
-// not be linked to Default admin access. display_name matches operator JSON
-// casing (lowercase "administrator" / "viewer").
+// not be linked to Default admin access. display_name and description match
+// operator JSON casing / copy (lowercase "administrator" / "viewer").
 var packagedRoles = []struct {
-	name, displayName string
-	permissions       []string
+	name, displayName, description string
+	permissions                    []string
 }{
 	{
 		name:        "Cost Price List Administrator",
 		displayName: "Cost Price List administrator",
+		description: "Perform read and write operations on cost models.",
 		permissions: []string{
 			"cost-management:cost_model:*",
 			"cost-management:settings:*",
@@ -35,6 +45,7 @@ var packagedRoles = []struct {
 	{
 		name:        "Cost Price List Viewer",
 		displayName: "Cost Price List viewer",
+		description: "Perform read operations on cost models.",
 		permissions: []string{
 			"cost-management:cost_model:read",
 			"cost-management:settings:read",
@@ -43,6 +54,7 @@ var packagedRoles = []struct {
 	{
 		name:        "Cost OpenShift Viewer",
 		displayName: "Cost OpenShift viewer",
+		description: "Perform read operations on cost reports related to OpenShift sources.",
 		permissions: []string{
 			"cost-management:openshift.cluster:*",
 		},
@@ -114,12 +126,12 @@ func Seed(db *store.DB) error {
 		}
 	}
 	for _, role := range adminRoles {
-		if err := seedRole(tx, tenantID, role.name, role.permission); err != nil {
+		if err := seedRole(tx, tenantID, role.name, role.permission, role.description); err != nil {
 			return err
 		}
 	}
 	for _, role := range packagedRoles {
-		if err := seedPackagedRole(tx, tenantID, role.name, role.displayName, role.permissions); err != nil {
+		if err := seedPackagedRole(tx, tenantID, role.name, role.displayName, role.description, role.permissions); err != nil {
 			return err
 		}
 	}
@@ -171,39 +183,40 @@ func seedDefaultAdminGroup(tx *store.Tx, tenantID int64) error {
 }
 
 // seedRole upserts one system admin_default role with a single permission grant.
-func seedRole(tx *store.Tx, tenantID int64, name, permission string) error {
-	return seedRoleWithFlags(tx, tenantID, name, name, []string{permission}, true)
+func seedRole(tx *store.Tx, tenantID int64, name, permission, description string) error {
+	return seedRoleWithFlags(tx, tenantID, name, name, description, []string{permission}, true)
 }
 
 // seedPackagedRole upserts a system role that is not admin_default and is not
 // attached to Default admin access. Used for operator packaged roles such as
 // Cost Price List Administrator/Viewer and Cost OpenShift Viewer.
-func seedPackagedRole(tx *store.Tx, tenantID int64, name, displayName string, permissions []string) error {
-	return seedRoleWithFlags(tx, tenantID, name, displayName, permissions, false)
+func seedPackagedRole(tx *store.Tx, tenantID int64, name, displayName, description string, permissions []string) error {
+	return seedRoleWithFlags(tx, tenantID, name, displayName, description, permissions, false)
 }
 
 // seedRoleWithFlags upserts a system role and its access grants. When
 // adminDefault is true the role is marked admin_default (Default admin access
-// path); otherwise admin_default stays 0.
-func seedRoleWithFlags(tx *store.Tx, tenantID int64, name, displayName string, permissions []string, adminDefault bool) error {
+// path); otherwise admin_default stays 0. description is operator-parity copy
+// for the UI Roles table.
+func seedRoleWithFlags(tx *store.Tx, tenantID int64, name, displayName, description string, permissions []string, adminDefault bool) error {
 	adminDefaultFlag := 0
 	if adminDefault {
 		adminDefaultFlag = 1
 	}
 	roleID, err := getOrCreate(tx,
 		`SELECT id FROM roles WHERE name=? AND tenant_id=?`, []any{name, tenantID},
-		`INSERT INTO roles(uuid, name, display_name, system, created, modified, tenant_id)
-		 VALUES(?, ?, ?, 1, ?, ?, ?)
-		 ON CONFLICT(name, tenant_id) DO NOTHING`, store.NewUUID(), name, displayName, store.Now(), store.Now(), tenantID)
+		`INSERT INTO roles(uuid, name, display_name, description, system, created, modified, tenant_id)
+		 VALUES(?, ?, ?, ?, 1, ?, ?, ?)
+		 ON CONFLICT(name, tenant_id) DO NOTHING`, store.NewUUID(), name, displayName, description, store.Now(), store.Now(), tenantID)
 	if err != nil {
 		return err
 	}
-	// Existing databases may predate admin_default / display_name; upgrade
-	// the row in place to match the current seed contract.
+	// Existing databases may predate admin_default / display_name / description;
+	// upgrade the row in place to match the current seed contract.
 	if _, err := tx.Exec(`UPDATE roles SET admin_default=?, platform_default=0, system=1,
-		display_name=?, created=COALESCE(NULLIF(created,''), ?),
+		display_name=?, description=?, created=COALESCE(NULLIF(created,''), ?),
 		modified=COALESCE(NULLIF(modified,''), ?) WHERE id=?`,
-		adminDefaultFlag, displayName, store.Now(), store.Now(), roleID); err != nil {
+		adminDefaultFlag, displayName, description, store.Now(), store.Now(), roleID); err != nil {
 		return err
 	}
 	for _, permission := range permissions {

@@ -37,14 +37,28 @@ evidence from that era.
 2. **Seed parity**: rbac-mini seeds `Cost Administrator` + `Sources
    administrator` (both `admin_default`), the public `Default admin access`
    group, the granular cost-management/sources permission catalog the role
-   wizard lists, and the packaged `Cost Price List Administrator` /
-   `Cost Price List Viewer` roles (operator-parity grants, not
-   `admin_default`, not on Default admin access)
+   wizard lists, and the packaged system roles below (operator-parity
+   grants, not `admin_default`, not on Default admin access)
    ([rbac_seed/data/](https://github.com/project-koku/koku-service-operator/tree/main/internal/resources/rbac_seed/data)).
-   Other operator roles (e.g. Cost Cloud Viewer / Cost OpenShift Viewer)
-   remain unseeded until needed.
-   **Resolution (2026-11-19):** Price List Admin + Viewer seeded —
-   [COST-8619](https://redhat.atlassian.net/browse/COST-8619).
+
+   **Expected Mini roles (after COST-8184):**
+
+   | Role | Flags | Notes |
+   |------|-------|-------|
+   | Cost Administrator | `admin_default` | already seeded |
+   | Sources administrator | `admin_default` | already seeded |
+   | Cost Price List Administrator | packaged | [COST-8619](https://redhat.atlassian.net/browse/COST-8619) |
+   | Cost Price List Viewer | packaged | [COST-8619](https://redhat.atlassian.net/browse/COST-8619) |
+   | Cost OpenShift Viewer | packaged | `cost-management:openshift.cluster:*` — [COST-8184](https://redhat.atlassian.net/browse/COST-8184) |
+   | Default admin access (group) | `admin_default` | links the two admin_default roles only |
+
+   **Intentionally omitted:** Cost Cloud Viewer (cloud ingest is largely
+   irrelevant on-prem). **Must not appear from Mini seed:** Django platform
+   junk (Notifications \*, Approval \*, Inventory \*, OCM \*, User Access \*,
+   `* Local Test`). Mini replaces Django; junk goes away by not seeding it.
+   **Resolution (2026-11-19 / 2026-11-24):** Price List roles —
+   [COST-8619](https://redhat.atlassian.net/browse/COST-8619); OpenShift
+   Viewer — [COST-8184](https://redhat.atlassian.net/browse/COST-8184).
 
 ## 2. API Deployment ([rbac.go: RBACAPIDeployment](https://github.com/project-koku/koku-service-operator/blob/main/internal/resources/rbac.go))
 

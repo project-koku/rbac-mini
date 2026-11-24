@@ -233,9 +233,11 @@ columns render dates instead of "Invalid date"/"—".
 - Same `costonprem_rbac` database throughout; Go tables coexist with Django
   tables; nothing is dropped on either flip.
 - [scripts/flush-rbac-cache.sh](https://github.com/project-koku/koku-service-operator/blob/main/scripts/flush-rbac-cache.sh) only affects koku-side cache now.
-- Price-list seed parity is closed: Mini seeds Cost Price List
-  Administrator/Viewer (see [OPERATOR-SWAP.md §1](OPERATOR-SWAP.md#1-open-decisions-still-relevant),
-  [COST-8619](https://redhat.atlassian.net/browse/COST-8619)). Remaining note:
-  `main` flag polish is in-repo only — the operator image embeds the
-  rbac-mini commit SHA; compare that pin to Mini `main` rather than
-  opening a ticket.
+- Packaged seed parity: Mini seeds Cost Price List Administrator/Viewer
+  ([COST-8619](https://redhat.atlassian.net/browse/COST-8619)) and Cost
+  OpenShift Viewer ([COST-8184](https://redhat.atlassian.net/browse/COST-8184));
+  Cost Cloud Viewer stays omitted (see
+  [OPERATOR-SWAP.md §1](OPERATOR-SWAP.md#1-open-decisions-still-relevant)).
+  Remaining note: `main` flag polish is in-repo only — the operator image
+  embeds the rbac-mini commit SHA; compare that pin to Mini `main` rather
+  than opening a ticket.

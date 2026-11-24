@@ -2,6 +2,7 @@ package seed
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,11 +252,11 @@ func TestBootstrapLowercasesUsernames(t *testing.T) {
 	}
 }
 
-// TestSeedCostPriceListRoles: operator-parity packaged roles for Cost Price
-// List Administrator/Viewer. They must be system, not admin_default, and
-// must not attach to Default admin access (unlike Cost Administrator /
-// Sources administrator).
-func TestSeedCostPriceListRoles(t *testing.T) {
+// TestSeedPackagedRoles: operator-parity system roles that are not
+// admin_default and must not attach to Default admin access (unlike Cost
+// Administrator / Sources administrator). Covers Price List Admin/Viewer and
+// Cost OpenShift Viewer in one table-driven check.
+func TestSeedPackagedRoles(t *testing.T) {
 	db := testDB(t)
 
 	if err := Seed(db); err != nil {
@@ -265,90 +266,41 @@ func TestSeedCostPriceListRoles(t *testing.T) {
 	type wantRole struct {
 		name        string
 		displayName string
+		description string
 		perms       []string
 	}
 	want := []wantRole{
 		{
 			name:        "Cost Price List Administrator",
 			displayName: "Cost Price List administrator",
+			description: "Perform read and write operations on cost models.",
 			perms:       []string{"cost-management:cost_model:*", "cost-management:settings:*"},
 		},
 		{
 			name:        "Cost Price List Viewer",
 			displayName: "Cost Price List viewer",
+			description: "Perform read operations on cost models.",
 			perms:       []string{"cost-management:cost_model:read", "cost-management:settings:read"},
+		},
+		{
+			name:        "Cost OpenShift Viewer",
+			displayName: "Cost OpenShift viewer",
+			description: "Perform read operations on cost reports related to OpenShift sources.",
+			perms:       []string{"cost-management:openshift.cluster:*"},
 		},
 	}
 
 	roleAccessCounts := map[string]int{}
 	for _, r := range want {
-		var system, adminDefault, platformDefault int
-		var displayName string
-		err := db.QueryRow(`SELECT r.system, r.admin_default, r.platform_default, r.display_name
-			FROM roles r
-			JOIN tenants t ON t.id = r.tenant_id
-			WHERE r.name=? AND t.tenant_name='public'`, r.name).Scan(
-			&system, &adminDefault, &platformDefault, &displayName)
-		if err != nil {
-			t.Fatalf("role %q missing: %v", r.name, err)
-		}
-		if system != 1 {
-			t.Errorf("role %q system = %d, want 1", r.name, system)
-		}
-		if adminDefault != 0 {
-			t.Errorf("role %q admin_default = %d, want 0", r.name, adminDefault)
-		}
-		if platformDefault != 0 {
-			t.Errorf("role %q platform_default = %d, want 0", r.name, platformDefault)
-		}
-		if displayName != r.displayName {
-			t.Errorf("role %q display_name = %q, want %q", r.name, displayName, r.displayName)
-		}
-
-		rows, err := db.Query(`SELECT p.permission FROM permissions p
-			JOIN access a ON a.permission_id = p.id
-			JOIN roles r ON r.id = a.role_id
-			JOIN tenants t ON t.id = r.tenant_id
-			WHERE r.name=? AND t.tenant_name='public'
-			ORDER BY p.permission`, r.name)
-		if err != nil {
-			t.Fatalf("access query for %q: %v", r.name, err)
-		}
-		var got []string
-		for rows.Next() {
-			var perm string
-			if err := rows.Scan(&perm); err != nil {
-				t.Fatalf("scan access for %q: %v", r.name, err)
-			}
-			got = append(got, perm)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("rows for %q: %v", r.name, err)
-		}
-		_ = rows.Close()
-		wantPerms := append([]string(nil), r.perms...)
-		slices.Sort(wantPerms)
-		if !slices.Equal(got, wantPerms) {
-			t.Errorf("role %q grants = %v, want %v", r.name, got, wantPerms)
-		}
-		roleAccessCounts[r.name] = len(got)
-
-		var onAdminGroup int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM policy_roles pr
-			JOIN policies p ON p.id = pr.policy_id
-			JOIN roles r ON r.id = pr.role_id
-			WHERE p.name='Default admin access' AND r.name=?`, r.name).Scan(&onAdminGroup); err != nil {
-			t.Fatalf("Default admin access link check for %q: %v", r.name, err)
-		}
-		if onAdminGroup != 0 {
-			t.Errorf("role %q linked to Default admin access, want not linked", r.name)
-		}
+		assertPackagedRole(t, db, r.name, r.displayName, r.description, r.perms)
+		roleAccessCounts[r.name] = len(r.perms)
 	}
 
 	var linked int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM policy_roles pr
 		JOIN policies p ON p.id = pr.policy_id
-		WHERE p.name='Default admin access'`).Scan(&linked); err != nil || linked != 2 {
+		JOIN tenants t ON t.id = p.tenant_id
+		WHERE p.name='Default admin access' AND t.tenant_name='public'`).Scan(&linked); err != nil || linked != 2 {
 		t.Errorf("Default admin access roles = %d, err = %v, want 2", linked, err)
 	}
 
@@ -375,7 +327,142 @@ func TestSeedCostPriceListRoles(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM policy_roles pr
 		JOIN policies p ON p.id = pr.policy_id
-		WHERE p.name='Default admin access'`).Scan(&linked); err != nil || linked != 2 {
+		JOIN tenants t ON t.id = p.tenant_id
+		WHERE p.name='Default admin access' AND t.tenant_name='public'`).Scan(&linked); err != nil || linked != 2 {
 		t.Errorf("after re-seed, Default admin access roles = %d, err = %v, want 2", linked, err)
+	}
+}
+
+func assertPackagedRole(t *testing.T, db *store.DB, name, displayName, description string, perms []string) {
+	t.Helper()
+
+	var system, adminDefault, platformDefault int
+	var gotDisplay, gotDescription string
+	err := db.QueryRow(`SELECT r.system, r.admin_default, r.platform_default, r.display_name, r.description
+		FROM roles r
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE r.name=? AND t.tenant_name='public'`, name).Scan(
+		&system, &adminDefault, &platformDefault, &gotDisplay, &gotDescription)
+	if err != nil {
+		t.Fatalf("role %q missing: %v", name, err)
+	}
+	if system != 1 {
+		t.Errorf("role %q system = %d, want 1", name, system)
+	}
+	if adminDefault != 0 {
+		t.Errorf("role %q admin_default = %d, want 0", name, adminDefault)
+	}
+	if platformDefault != 0 {
+		t.Errorf("role %q platform_default = %d, want 0", name, platformDefault)
+	}
+	if gotDisplay != displayName {
+		t.Errorf("role %q display_name = %q, want %q", name, gotDisplay, displayName)
+	}
+	if gotDescription != description {
+		t.Errorf("role %q description = %q, want %q", name, gotDescription, description)
+	}
+
+	rows, err := db.Query(`SELECT p.permission FROM permissions p
+		JOIN access a ON a.permission_id = p.id
+		JOIN roles r ON r.id = a.role_id
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE r.name=? AND t.tenant_name='public'
+		ORDER BY p.permission`, name)
+	if err != nil {
+		t.Fatalf("access query for %q: %v", name, err)
+	}
+	var got []string
+	for rows.Next() {
+		var perm string
+		if err := rows.Scan(&perm); err != nil {
+			t.Fatalf("scan access for %q: %v", name, err)
+		}
+		got = append(got, perm)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows for %q: %v", name, err)
+	}
+	_ = rows.Close()
+	wantPerms := append([]string(nil), perms...)
+	slices.Sort(wantPerms)
+	if !slices.Equal(got, wantPerms) {
+		t.Errorf("role %q grants = %v, want %v", name, got, wantPerms)
+	}
+
+	var onAdminGroup int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM policy_roles pr
+		JOIN policies p ON p.id = pr.policy_id
+		JOIN roles r ON r.id = pr.role_id
+		JOIN tenants t ON t.id = p.tenant_id
+		WHERE p.name='Default admin access' AND t.tenant_name='public' AND r.name=?`, name).Scan(&onAdminGroup); err != nil {
+		t.Fatalf("Default admin access link check for %q: %v", name, err)
+	}
+	if onAdminGroup != 0 {
+		t.Errorf("role %q linked to Default admin access, want not linked", name)
+	}
+}
+
+// TestSeedDoesNotCreateUnexpectedRoles: Mini must not seed Cost Cloud Viewer
+// or Django platform junk (Notifications, Approval, Inventory, OCM, User
+// Access, Local Test).
+func TestSeedDoesNotCreateUnexpectedRoles(t *testing.T) {
+	db := testDB(t)
+
+	if err := Seed(db); err != nil {
+		t.Fatalf("Seed returned error: %v", err)
+	}
+
+	exactDenylist := []string{
+		"Cost Cloud Viewer",
+	}
+	for _, name := range exactDenylist {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM roles r
+			JOIN tenants t ON t.id = r.tenant_id
+			WHERE r.name=? AND t.tenant_name='public'`, name).Scan(&n); err != nil {
+			t.Fatalf("denylist exact check for %q: %v", name, err)
+		}
+		if n != 0 {
+			t.Errorf("unexpected role %q seeded (count=%d)", name, n)
+		}
+	}
+
+	rows, err := db.Query(`SELECT r.name FROM roles r
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE t.tenant_name='public'`)
+	if err != nil {
+		t.Fatalf("list public roles: %v", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan role name: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("role name rows: %v", err)
+	}
+
+	substringDenylist := []string{
+		"Notifications",
+		"Approval",
+		"Inventory",
+		"User Access",
+		"Local Test",
+		"OCM",
+	}
+	for _, sub := range substringDenylist {
+		var found []string
+		for _, name := range names {
+			if strings.Contains(name, sub) {
+				found = append(found, name)
+			}
+		}
+		if len(found) != 0 {
+			t.Errorf("unexpected roles containing %q: %v", sub, found)
+		}
 	}
 }

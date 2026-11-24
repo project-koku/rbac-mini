@@ -40,6 +40,13 @@ var packagedRoles = []struct {
 			"cost-management:settings:read",
 		},
 	},
+	{
+		name:        "Cost OpenShift Viewer",
+		displayName: "Cost OpenShift viewer",
+		permissions: []string{
+			"cost-management:openshift.cluster:*",
+		},
+	},
 }
 
 // defaultAdminGroup is the public tenant group Django's seed_group() creates
@@ -170,7 +177,7 @@ func seedRole(tx *store.Tx, tenantID int64, name, permission string) error {
 
 // seedPackagedRole upserts a system role that is not admin_default and is not
 // attached to Default admin access. Used for operator packaged roles such as
-// Cost Price List Administrator/Viewer.
+// Cost Price List Administrator/Viewer and Cost OpenShift Viewer.
 func seedPackagedRole(tx *store.Tx, tenantID int64, name, displayName string, permissions []string) error {
 	return seedRoleWithFlags(tx, tenantID, name, displayName, permissions, false)
 }

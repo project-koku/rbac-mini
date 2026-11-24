@@ -94,11 +94,12 @@ broker. The on-prem beat entry `car-wash-daily` scans an always-empty table.
   admin_default), Price List Admin/Viewer, OCP cluster viewer, etc.
 - [sources.roles.json](https://github.com/project-koku/koku-service-operator/blob/main/internal/resources/rbac_seed/data/sources.roles.json): Sources administrator (`sources:*:*`, admin_default).
 - rbac-go seeds the two admin_default roles plus Cost Price List
-  Administrator/Viewer (operator-parity grants, `admin_default=0`, not on
-  Default admin access). Other packaged roles (e.g. OCP cluster viewer)
-  remain unseeded until needed.
-  **Resolution (2026-11-19):** Cost Price List Admin + Viewer seeded —
-  [COST-8619](https://redhat.atlassian.net/browse/COST-8619).
+  Administrator/Viewer and Cost OpenShift Viewer (operator-parity grants,
+  `admin_default=0`, not on Default admin access). Cost Cloud Viewer and
+  Django platform junk are intentionally not seeded.
+  **Resolution (2026-11-19 / 2026-11-24):** Cost Price List Admin + Viewer —
+  [COST-8619](https://redhat.atlassian.net/browse/COST-8619); Cost OpenShift
+  Viewer — [COST-8184](https://redhat.atlassian.net/browse/COST-8184).
 
 ## 7. On-prem UI (koku-ui/apps/rbac-ui-onprem) API surface
 

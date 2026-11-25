@@ -302,7 +302,7 @@ func TestBootstrapErrorsOnClosedDB(t *testing.T) {
 	}
 }
 
-// TestBootstrapUpgradesLegacyUserType: re-bootstrap flips type=user →
+// TestBootstrapUpgradesLegacyUserType: re-bootstrap flips type=user to
 // service-account so sync prune cannot remove the CMMO principal.
 func TestBootstrapUpgradesLegacyUserType(t *testing.T) {
 	db := testDB(t)

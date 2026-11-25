@@ -91,7 +91,7 @@ func principals(t *testing.T, dsn, org string) map[string]bool {
 }
 
 // TestSyncCommand wires the operator CronJob equivalent end to end:
-// migrate → seed → bootstrap (CMMO SA) → sync. Bootstrap SAs survive prune;
+// migrate, seed, bootstrap (CMMO SA), sync. Bootstrap SAs survive prune;
 // orphaned type=user principals are removed.
 func TestSyncCommand(t *testing.T) {
 	dsn := "sqlite://" + filepath.Join(t.TempDir(), "rbac.db")

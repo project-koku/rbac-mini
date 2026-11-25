@@ -126,7 +126,7 @@ binary/schema mismatch and implement the safest approach —
 2. Operator e2e personas when a `backend: go` job exists (beta today: unit
    tests + manual CRC smoke — see operator
    [rbac-backend-go.md](https://github.com/project-koku/koku-service-operator/blob/main/docs/development/rbac-backend-go.md)).
-3. Gateway / CMMO bootstrap uses
+3. Gateway/IQE bootstrap uses
    `rbac-mini migrate && rbac-mini seed && rbac-mini bootstrap --org … --users …`.
    Bootstrap binds **Sources administrator** only (not Cost Administrator) and
    creates `type=service-account` principals so Keycloak sync prune cannot

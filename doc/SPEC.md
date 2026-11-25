@@ -205,6 +205,14 @@ The seed job must be idempotent (`get_or_create` semantics) and must upgrade
 rows seeded before a flag existed (the code issues an `UPDATE` after
 `INSERT ... ON CONFLICT DO NOTHING`).
 
+`rbac-mini bootstrap --org … --users …` materializes CMMO / service-account
+principals for an org: tenant + `CI Test Admin` group bound to **Sources
+administrator only** (`sources:*:*`), not Cost Administrator. Principals are
+stored as `type=service-account` so Keycloak sync prune (which deletes orphan
+`type=user` rows) cannot remove gateway usernames such as
+`cost-mgmt-operator` that never appear in Keycloak's usable user list
+([COST-8231](https://redhat.atlassian.net/browse/COST-8231)).
+
 ## 4. Identity Header
 
 `x-rh-identity` = base64 JSON: `{org_id, identity:{type: User|ServiceAccount,

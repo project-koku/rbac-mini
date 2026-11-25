@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"rbac-go/internal/access"
 	"rbac-go/internal/seed"
 	"rbac-go/internal/store"
 	"rbac-go/internal/testdb"
@@ -43,12 +44,7 @@ func stubKeycloak(t *testing.T, users []string, seen *[]string) *httptest.Server
 
 func TestSyncUpsertsAndPrunes(t *testing.T) {
 	db := testdb.Open(t)
-	if err := seed.Seed(db); err != nil {
-		t.Fatalf("Seed: %v", err)
-	}
-	if err := seed.Bootstrap(db, "100001", "1111111", []string{"alice", "stale"}); err != nil {
-		t.Fatalf("Bootstrap: %v", err)
-	}
+	seedOrgWithUserPrincipals(t, db, "alice", "stale")
 
 	var seen []string
 	srv := stubKeycloak(t, []string{"alice", "bob"}, &seen)
@@ -174,12 +170,7 @@ func readPrincipal(t *testing.T, db *store.DB, username string) (principalRow, b
 // org-admin comes from the realm role the sidecar used to read.
 func TestSyncPersistsProfilesAndKeepsDisabled(t *testing.T) {
 	db := testdb.Open(t)
-	if err := seed.Seed(db); err != nil {
-		t.Fatalf("Seed: %v", err)
-	}
-	if err := seed.Bootstrap(db, "100001", "1111111", []string{"alice", "bob", "carol"}); err != nil {
-		t.Fatalf("Bootstrap: %v", err)
-	}
+	seedOrgWithUserPrincipals(t, db, "alice", "bob", "carol")
 
 	users := []kcStubUser{
 		{ID: "kc-alice", Username: "Alice", Email: "alice@example.com", FirstName: "Alice", LastName: "Admin", Enabled: true},
@@ -481,13 +472,92 @@ func listOrgPrincipals(t *testing.T, db *store.DB, org string) map[string]bool {
 	return out
 }
 
-func seedSyncedTenant(t *testing.T, db *store.DB) {
+// seedOrgWithUserPrincipals prepares tenant + CI Test Admin via Bootstrap
+// (no SA usernames), then inserts pruneable type=user fixtures for sync tests.
+// Bootstrap itself creates type=service-account principals that prune skips.
+func seedOrgWithUserPrincipals(t *testing.T, db *store.DB, usernames ...string) {
 	t.Helper()
 	if err := seed.Seed(db); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
-	if err := seed.Bootstrap(db, "100001", "1111111", []string{"alice", "bob", "carol"}); err != nil {
+	if err := seed.Bootstrap(db, "100001", "1111111", nil); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
+	}
+	var tenantID, groupID int64
+	if err := db.QueryRow(`SELECT id FROM tenants WHERE org_id='100001'`).Scan(&tenantID); err != nil {
+		t.Fatalf("tenant: %v", err)
+	}
+	if err := db.QueryRow(`SELECT id FROM groups WHERE name='CI Test Admin' AND tenant_id=?`,
+		tenantID).Scan(&groupID); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	for _, u := range usernames {
+		u = strings.ToLower(u)
+		if _, err := db.Exec(`INSERT INTO principals(uuid, username, type, is_active, tenant_id)
+			VALUES(?, ?, 'user', 1, ?)`, store.NewUUID(), u, tenantID); err != nil {
+			t.Fatalf("insert principal %q: %v", u, err)
+		}
+		var pid int64
+		if err := db.QueryRow(`SELECT id FROM principals WHERE username=? AND tenant_id=?`,
+			u, tenantID).Scan(&pid); err != nil {
+			t.Fatalf("principal id %q: %v", u, err)
+		}
+		if _, err := db.Exec(`INSERT INTO group_principals(group_id, principal_id)
+			VALUES(?, ?) ON CONFLICT(group_id, principal_id) DO NOTHING`, groupID, pid); err != nil {
+			t.Fatalf("group member %q: %v", u, err)
+		}
+	}
+}
+
+func seedSyncedTenant(t *testing.T, db *store.DB) {
+	t.Helper()
+	seedOrgWithUserPrincipals(t, db, "alice", "bob", "carol")
+}
+
+// TestBootstrapServiceAccountSurvivesPrune: COST-8231 CMMO principal must
+// remain after sync prune because it is type=service-account and absent from
+// Keycloak's usable user list.
+func TestBootstrapServiceAccountSurvivesPrune(t *testing.T) {
+	db := testdb.Open(t)
+	if err := seed.Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := seed.Bootstrap(db, "100001", "1111111", []string{"cost-mgmt-operator", "stale-user"}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	// stale-user as type=user stands in for a vanished human; SA must stay.
+	if _, err := db.Exec(`UPDATE principals SET type='user' WHERE username='stale-user'`); err != nil {
+		t.Fatalf("demote stale-user: %v", err)
+	}
+
+	var seen []string
+	srv := stubKeycloak(t, []string{"alice"}, &seen)
+	defer srv.Close()
+	if err := Sync(db, Config{
+		BaseURL: srv.URL, Realm: "onprem",
+		ClientID: "rbac-keycloak-sync", ClientSecret: "s3cret",
+		OrgID: "100001", Group: "CI Test Admin", PruneOrphans: true,
+	}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	got := listOrgPrincipals(t, db, "100001")
+	if !got["cost-mgmt-operator"] {
+		t.Fatalf("principals = %v, want cost-mgmt-operator to survive prune", got)
+	}
+	if got["stale-user"] {
+		t.Errorf("principals = %v, want stale-user pruned", got)
+	}
+	if !got["alice"] {
+		t.Errorf("principals = %v, want alice from Keycloak", got)
+	}
+
+	gotAccess, err := access.Query(db, "100001", "cost-mgmt-operator", []string{"sources"}, false)
+	if err != nil {
+		t.Fatalf("access: %v", err)
+	}
+	if len(gotAccess) != 1 || gotAccess[0].Permission != "sources:*:*" {
+		t.Errorf("sources access = %v, want [sources:*:*] after prune", gotAccess)
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"rbac-go/internal/store"
 )
 
 // TestServeAnswersStatus boots the real binary path (open + migrate + listen)
@@ -89,13 +91,14 @@ func principals(t *testing.T, dsn, org string) map[string]bool {
 }
 
 // TestSyncCommand wires the operator CronJob equivalent end to end:
-// migrate → seed → bootstrap → sync against a stub Keycloak prunes stale.
+// migrate → seed → bootstrap (CMMO SA) → sync. Bootstrap SAs survive prune;
+// orphaned type=user principals are removed.
 func TestSyncCommand(t *testing.T) {
 	dsn := "sqlite://" + filepath.Join(t.TempDir(), "rbac.db")
 	steps := [][]string{
 		{"migrate"},
 		{"seed"},
-		{"bootstrap", "--org", "100001", "--account", "1111111", "--users", "alice,stale"},
+		{"bootstrap", "--org", "100001", "--account", "1111111", "--users", "cost-mgmt-operator"},
 	}
 	for _, args := range steps {
 		if err := run(args, dsn); err != nil {
@@ -103,17 +106,29 @@ func TestSyncCommand(t *testing.T) {
 		}
 	}
 
+	db, err := openDatabase(dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO principals(uuid, username, type, is_active, tenant_id)
+		SELECT ?, 'stale', 'user', 1, id FROM tenants WHERE org_id='100001'`, store.NewUUID()); err != nil {
+		t.Fatalf("insert stale user: %v", err)
+	}
+	_ = db.Close()
+
 	srv := stubKeycloak(t, []string{"alice", "bob"})
 	defer srv.Close()
-	err := run([]string{"sync",
+	if err := run([]string{"sync",
 		"--keycloak-url", srv.URL, "--realm", "onprem",
 		"--client-id", "rbac-keycloak-sync", "--client-secret", "s3cret",
-		"--org", "100001", "--group", "CI Test Admin", "--prune-orphans"}, dsn)
-	if err != nil {
+		"--org", "100001", "--group", "CI Test Admin", "--prune-orphans"}, dsn); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
 	got := principals(t, dsn, "100001")
+	if !got["cost-mgmt-operator"] {
+		t.Errorf("principals = %v, want cost-mgmt-operator to survive prune", got)
+	}
 	if !got["alice"] || !got["bob"] {
 		t.Errorf("principals = %v, want alice and bob", got)
 	}

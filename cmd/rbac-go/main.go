@@ -156,7 +156,7 @@ func run(args []string, databaseURL string) error {
 		fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 		org := fs.String("org", "", "org_id")
 		account := fs.String("account", "", "account number")
-		users := fs.String("users", "", "comma-separated usernames")
+		users := fs.String("users", "", "comma-separated gateway usernames (CMMO SA → Sources administrator)")
 		if err := fs.Parse(rest); err != nil {
 			return err
 		}

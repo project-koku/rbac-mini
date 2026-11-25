@@ -209,9 +209,10 @@ spec:
 
 Prerequisites that were needed:
 
-* `org-admin` realm role on the `cost-management-operator` service account,
-  and a `cost-mgmt-operator` principal in rbac-mini (koku's sources permission
-  checks `/access/`).
+* A `cost-mgmt-operator` principal in rbac-mini bound to **Sources
+  administrator** (gateway username; not Keycloak `service-account-*`). Prefer
+  `rbac-mini bootstrap --org … --users cost-mgmt-operator` ([COST-8231](https://redhat.atlassian.net/browse/COST-8231)).
+  Do **not** rely on Keycloak `org-admin` on the CMMO SA for least-privilege.
 * The gateway must accept the Keycloak token and mint `x-rh-identity` for it.
 * Object storage: the MinIO community image is no longer pullable, so the
   `minio` Deployment in `cost-byoi-infra` was replaced with SeaweedFS S3 on the

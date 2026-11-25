@@ -249,7 +249,7 @@ func seedRoleWithFlags(tx *store.Tx, tenantID int64, name, displayName, descript
 // Bootstrap wires an org for on-prem CMMO / service-account use: tenant +
 // "CI Test Admin" group carrying the seeded Sources administrator role + one
 // principal per username. Principals are type=service-account so Keycloak
-// sync prune (which only deletes type=user) cannot remove them — gateway
+// sync prune (which only deletes type=user) cannot remove them: gateway
 // usernames like cost-mgmt-operator are not Keycloak users. Idempotent; a
 // re-run replaces any prior Cost Administrator bind on this policy with
 // Sources administrator only (COST-8231 least-privilege).

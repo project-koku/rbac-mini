@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 
@@ -39,11 +40,27 @@ func NewUUID() string {
 	return string(dst)
 }
 
-// Schema is the portable DDL for the 10 v1 tables (SPEC §3).
+// SchemaVersion is the schema revision this binary understands. Bump it with
+// every schema change; Migrate refuses to run against a database stamped with
+// a higher version (forward-only, see OPERATOR-SWAP §7).
+const SchemaVersion = 1
+
+// schemaVersionTable is the single-row version stamp. It is part of Schema,
+// but Migrate also creates it first so the version can be read before any
+// other DDL runs.
+const schemaVersionTable = `
+CREATE TABLE IF NOT EXISTS schema_version (
+  id INTEGER PRIMARY KEY,
+  version INTEGER NOT NULL
+);
+`
+
+// Schema is the portable DDL for the 10 v1 tables plus the schema_version
+// stamp (SPEC §3).
 // Types are restricted to INTEGER / TEXT so the same statements run on
 // SQLite (dev/test) and Postgres (prod DDL adds SERIAL equivalents
 // separately). No DISTINCT ON, no JSON operators, no expression indexes.
-const Schema = `
+const Schema = schemaVersionTable + `
 CREATE TABLE IF NOT EXISTS tenants (
   id INTEGER PRIMARY KEY,
   org_id TEXT NOT NULL UNIQUE,
@@ -235,10 +252,64 @@ func OpenPostgres(dsn string) (*DB, error) {
 
 // SchemaPostgres is Schema with auto-increment PKs; everything else is
 // identical on purpose so both dialects behave the same.
-var SchemaPostgres = strings.ReplaceAll(Schema, "INTEGER PRIMARY KEY", "BIGSERIAL PRIMARY KEY")
+var SchemaPostgres = postgresDDL(Schema)
 
-// Migrate applies the portable schema. Idempotent.
+func postgresDDL(ddl string) string {
+	return strings.ReplaceAll(ddl, "INTEGER PRIMARY KEY", "BIGSERIAL PRIMARY KEY")
+}
+
+// checkSchemaVersion creates the schema_version table (a no-op when it
+// exists) and refuses a database stamped by a newer binary. It runs before
+// any other DDL so a refused run changes nothing. A missing stamp (database
+// created before versioning) counts as version 0.
+func checkSchemaVersion(db *DB) error {
+	ddl := schemaVersionTable
+	if db.Driver == DriverPostgres {
+		ddl = postgresDDL(ddl)
+	}
+	if _, err := db.Exec(ddl); err != nil {
+		return fmt.Errorf("create schema_version: %w", err)
+	}
+	// MAX tolerates a stray second row from two concurrent first-time stamps.
+	var stamped int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&stamped); err != nil {
+		return fmt.Errorf("read schema_version: %w", err)
+	}
+	if stamped > SchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than this binary (%d): "+
+			"the operator image was rolled back — roll the operator image forward "+
+			"or restore the database from a backup taken before the upgrade",
+			stamped, SchemaVersion)
+	}
+	return nil
+}
+
+// stampSchemaVersion records SchemaVersion. Portable read-then-write: no
+// upsert syntax, and the id is auto-assigned on both dialects.
+func stampSchemaVersion(db *DB) error {
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&rows); err != nil {
+		return fmt.Errorf("read schema_version: %w", err)
+	}
+	var err error
+	if rows == 0 {
+		_, err = db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, SchemaVersion)
+	} else {
+		_, err = db.Exec(`UPDATE schema_version SET version = ?`, SchemaVersion)
+	}
+	if err != nil {
+		return fmt.Errorf("stamp schema_version: %w", err)
+	}
+	return nil
+}
+
+// Migrate applies the portable schema and stamps SchemaVersion. Idempotent at
+// equal versions; forward-only: it refuses a database stamped by a newer
+// binary before applying anything.
 func Migrate(db *DB) error {
+	if err := checkSchemaVersion(db); err != nil {
+		return err
+	}
 	schema := Schema
 	if db.Driver == DriverPostgres {
 		schema = SchemaPostgres
@@ -278,5 +349,5 @@ func Migrate(db *DB) error {
 		_, _ = db.Exec(`UPDATE `+table+` SET created=? WHERE created IS NULL OR created=''`, now)
 		_, _ = db.Exec(`UPDATE `+table+` SET modified=? WHERE modified IS NULL OR modified=''`, now)
 	}
-	return nil
+	return stampSchemaVersion(db)
 }

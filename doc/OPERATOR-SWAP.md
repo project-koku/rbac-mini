@@ -102,7 +102,7 @@ Env names map 1:1 except org/group resolution (see §1.1).
 ## 6. Database
 
 Same `costonprem_rbac` database, Mini tables
-([SPEC.md §3](SPEC.md#3-data-model-10-tables--sqlite--postgres-portable)).
+([SPEC.md §3](SPEC.md#3-data-model-11-tables--sqlite--postgres-portable)).
 They coexist with Django tables; drop the old ones in a later release.
 `waitForRBACDB` initContainer unchanged. When the operator sets
 `PGSSLMODE` from `spec.database.sslMode`, Mini honors it on the assembled
@@ -112,13 +112,48 @@ rollback to insights-rbac stays possible; no Jira for now.
 
 ## 7. Upgrade / rollback note
 
-With `backend: go`, the Mini binary follows the **running operator image**.
-A `status.upgrade` rollback restores the CR spec but cannot bring back a
-previous Mini binary — that requires rolling the operator Deployment back
-to the previous operator image.
-**Resolution (2026-11-19):** Investigate CR rollback vs embedded Mini
-binary/schema mismatch and implement the safest approach —
-[COST-8620](https://redhat.atlassian.net/browse/COST-8620).
+Tracked in [COST-8620](https://redhat.atlassian.net/browse/COST-8620).
+
+**Findings**
+
+* With `backend: go`, the Mini binary is embedded in the operator image
+  (`/usr/local/bin/rbac-mini`, pinned by `RBAC_MINI_REF` in the operator
+  Dockerfile); `spec.rbac.image` is ignored.
+* A CMSC `status.upgrade` / CR rollback restores the CR **spec** only. It
+  does **not** bring back the previous Mini binary. Getting the previous
+  Mini requires rolling the operator Deployment back to the previous operator
+  image (image pin / Deployment rollback).
+* The database never rolls back with either. Before schema versioning,
+  `store.Migrate` was idempotent but unversioned, so an older binary could
+  open a newer schema and "work" until it silently misbehaved.
+
+**Recommendation: forward-only.** The DB schema only moves forward; there are
+no down-migrations and no expand/contract framework. An older binary refuses
+to run against a newer schema instead of guessing.
+
+**Guard behavior**
+
+* `store.Migrate` stamps a single-row `schema_version` table with the
+  binary's `store.SchemaVersion` (currently `1`; bumped with every schema
+  change). Stamping is idempotent.
+* Before applying any DDL, `Migrate` reads the stamp. If it is **newer** than
+  the binary's `SchemaVersion`, it returns an error and changes nothing (the
+  stamp is never rewritten by a refused run).
+* Every entry point (`serve`, `migrate`, `seed`, `bootstrap`, `sync`) goes
+  through `prepareDB` → `Migrate`, so after an operator image rollback the
+  migrate Job fails and `serve` crash-loops with
+  `database schema version N is newer than this binary (M): the operator
+  image was rolled back — …`. That is intended: loud, not silent.
+* A database created before versioning has no stamp row (version 0): it
+  migrates forward and is stamped.
+* There is deliberately **no bypass flag or env var**.
+
+**Recovery paths** (pick one)
+
+1. **Roll the operator image forward** to a release whose Mini
+   `SchemaVersion` is at least the database's. This is the normal fix.
+2. **Restore the database** from a backup taken before the upgrade, then run
+   the older operator image. Data written since the upgrade is lost.
 
 ## 8. Verification
 

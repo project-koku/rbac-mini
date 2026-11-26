@@ -124,6 +124,8 @@ Provisioning writes it without an ORM:
 
 * `seed.Seed` — `public` tenant + `Cost Administrator`
   (`cost-management:*:*`) + `Sources administrator` (`sources:*:*`).
-* `seed.Bootstrap` — tenant + `CI Test Admin` group + policy + principals.
+* `seed.Bootstrap` — tenant + `CI Test Admin` group + Sources administrator
+  (strips leftover Cost Administrator) + `type=service-account` principals
+  (COST-8231 CMMO least-privilege).
 * `keycloak.Sync` — tenant ensure + principal upserts/prunes (+ group
   membership only in single-org mode).

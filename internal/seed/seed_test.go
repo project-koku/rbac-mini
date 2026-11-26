@@ -148,11 +148,10 @@ func TestSeedCostAdministrator(t *testing.T) {
 	}
 }
 
-// TestBootstrapGrantsCostAdministrator mirrors
-// operator render_bootstrap_script: tenant + "CI Test Admin" group carrying
-// the seeded Cost Administrator role + one principal per service account.
-// End-to-end check: the bootstrapped principal sees cost-management:*:*.
-func TestBootstrapGrantsCostAdministrator(t *testing.T) {
+// TestBootstrapGrantsSourcesAdministrator: tenant + "CI Test Admin" carrying
+// Sources administrator only (COST-8231). End-to-end: sources write present,
+// cost-management admin absent, Admin=false, type=service-account.
+func TestBootstrapGrantsSourcesAdministrator(t *testing.T) {
 	db := testDB(t)
 	if err := Seed(db); err != nil {
 		t.Fatalf("Seed: %v", err)
@@ -163,9 +162,8 @@ func TestBootstrapGrantsCostAdministrator(t *testing.T) {
 		t.Fatalf("first Bootstrap returned error: %v", err)
 	}
 
-	var tenantName string
 	var ready int
-	if err := db.QueryRow(`SELECT tenant_name, ready FROM tenants WHERE org_id='100001'`).Scan(&tenantName, &ready); err != nil {
+	if err := db.QueryRow(`SELECT ready FROM tenants WHERE org_id='100001'`).Scan(&ready); err != nil {
 		t.Fatalf("tenant missing: %v", err)
 	}
 	if ready != 1 {
@@ -182,8 +180,16 @@ func TestBootstrapGrantsCostAdministrator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CI Test Admin policy missing: %v", err)
 	}
-	if role != "Cost Administrator" {
-		t.Errorf("role = %q, want %q", role, "Cost Administrator")
+	if role != "Sources administrator" {
+		t.Errorf("role = %q, want %q", role, "Sources administrator")
+	}
+	var roleCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM policies pol
+		JOIN groups g ON g.id = pol.group_id
+		JOIN policy_roles pr ON pr.policy_id = pol.id
+		JOIN tenants t ON t.id = pol.tenant_id
+		WHERE t.org_id='100001' AND g.name='CI Test Admin'`).Scan(&roleCount); err != nil || roleCount != 1 {
+		t.Fatalf("CI Test Admin role count = %d err=%v, want 1", roleCount, err)
 	}
 
 	for _, u := range users {
@@ -196,17 +202,29 @@ func TestBootstrapGrantsCostAdministrator(t *testing.T) {
 		if err != nil || inGroup != 1 {
 			t.Errorf("principal %q in group: count=%d, err=%v, want 1", u, inGroup, err)
 		}
+		var ptype string
+		if err := db.QueryRow(`SELECT pr.type FROM principals pr
+			JOIN tenants t ON t.id = pr.tenant_id
+			WHERE t.org_id='100001' AND pr.username=?`, u).Scan(&ptype); err != nil || ptype != "service-account" {
+			t.Errorf("principal %q type = %q err=%v, want service-account", u, ptype, err)
+		}
 	}
 
-	got, err := access.Query(db, "100001", "cost-mgmt-operator", []string{"cost-management"}, false)
+	sources, err := access.Query(db, "100001", "cost-mgmt-operator", []string{"sources"}, false)
 	if err != nil {
-		t.Fatalf("Query: %v", err)
+		t.Fatalf("Query sources: %v", err)
 	}
-	if len(got) != 1 || got[0].Permission != "cost-management:*:*" {
-		t.Errorf("access = %v, want [cost-management:*:*]", got)
+	if len(sources) != 1 || sources[0].Permission != "sources:*:*" {
+		t.Errorf("sources access = %v, want [sources:*:*]", sources)
+	}
+	cost, err := access.Query(db, "100001", "cost-mgmt-operator", []string{"cost-management"}, false)
+	if err != nil {
+		t.Fatalf("Query cost-management: %v", err)
+	}
+	if len(cost) != 0 {
+		t.Errorf("cost-management access = %v, want empty (no Cost Administrator)", cost)
 	}
 
-	// Idempotent like the seed: re-running changes nothing.
 	before := counts(t, db)
 	if err := Bootstrap(db, "100001", "acct1111111", users); err != nil {
 		t.Fatalf("second Bootstrap returned error: %v", err)
@@ -219,13 +237,173 @@ func TestBootstrapGrantsCostAdministrator(t *testing.T) {
 	}
 }
 
-// TestBootstrapRequiresSeededCostAdministrator: bootstrap looks up the
-// public Cost Administrator role; without Seed it must fail (not create a
-// half-wired org).
-func TestBootstrapRequiresSeededCostAdministrator(t *testing.T) {
+// TestBootstrapReplacesCostAdministratorBind: re-running bootstrap after an
+// older Cost Administrator policy bind leaves Sources administrator only.
+func TestBootstrapReplacesCostAdministratorBind(t *testing.T) {
+	db := testDB(t)
+	if err := Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := Bootstrap(db, "100001", "acct", []string{"cost-mgmt-operator"}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	var policyID, costRoleID int64
+	if err := db.QueryRow(`SELECT pol.id FROM policies pol
+		JOIN groups g ON g.id = pol.group_id
+		JOIN tenants t ON t.id = pol.tenant_id
+		WHERE t.org_id='100001' AND g.name='CI Test Admin'`).Scan(&policyID); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if err := db.QueryRow(`SELECT r.id FROM roles r
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE r.name='Cost Administrator' AND t.tenant_name='public'`).Scan(&costRoleID); err != nil {
+		t.Fatalf("Cost Administrator: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO policy_roles(policy_id, role_id) VALUES(?, ?)`,
+		policyID, costRoleID); err != nil {
+		t.Fatalf("inject Cost Administrator: %v", err)
+	}
+	if err := Bootstrap(db, "100001", "acct", []string{"cost-mgmt-operator"}); err != nil {
+		t.Fatalf("re-Bootstrap: %v", err)
+	}
+	var names []string
+	rows, err := db.Query(`SELECT r.name FROM policy_roles pr
+		JOIN roles r ON r.id = pr.role_id WHERE pr.policy_id=? ORDER BY r.name`, policyID)
+	if err != nil {
+		t.Fatalf("list roles: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	if len(names) != 1 || names[0] != "Sources administrator" {
+		t.Fatalf("policy roles = %v, want [Sources administrator]", names)
+	}
+}
+
+// TestBootstrapPreservesExtraPolicyRoles: re-bootstrap must not wipe roles an
+// admin attached via the group roles API; only Cost Administrator is removed.
+func TestBootstrapPreservesExtraPolicyRoles(t *testing.T) {
+	db := testDB(t)
+	if err := Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := Bootstrap(db, "100001", "acct", []string{"cost-mgmt-operator"}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	var policyID, costRoleID, viewerRoleID int64
+	if err := db.QueryRow(`SELECT pol.id FROM policies pol
+		JOIN groups g ON g.id = pol.group_id
+		JOIN tenants t ON t.id = pol.tenant_id
+		WHERE t.org_id='100001' AND g.name='CI Test Admin'`).Scan(&policyID); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if err := db.QueryRow(`SELECT r.id FROM roles r
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE r.name='Cost Administrator' AND t.tenant_name='public'`).Scan(&costRoleID); err != nil {
+		t.Fatalf("Cost Administrator: %v", err)
+	}
+	if err := db.QueryRow(`SELECT r.id FROM roles r
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE r.name='Cost OpenShift Viewer' AND t.tenant_name='public'`).Scan(&viewerRoleID); err != nil {
+		t.Fatalf("Cost OpenShift Viewer: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO policy_roles(policy_id, role_id) VALUES(?, ?), (?, ?)`,
+		policyID, costRoleID, policyID, viewerRoleID); err != nil {
+		t.Fatalf("inject roles: %v", err)
+	}
+	if err := Bootstrap(db, "100001", "acct", []string{"cost-mgmt-operator"}); err != nil {
+		t.Fatalf("re-Bootstrap: %v", err)
+	}
+	var names []string
+	rows, err := db.Query(`SELECT r.name FROM policy_roles pr
+		JOIN roles r ON r.id = pr.role_id WHERE pr.policy_id=? ORDER BY r.name`, policyID)
+	if err != nil {
+		t.Fatalf("list roles: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	want := []string{"Cost OpenShift Viewer", "Sources administrator"}
+	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
+		t.Fatalf("policy roles = %v, want %v", names, want)
+	}
+}
+
+// TestBootstrapSkipsEmptyUsernames: whitespace / empty CSV entries must not
+// create durable service-account principals.
+func TestBootstrapSkipsEmptyUsernames(t *testing.T) {
+	db := testDB(t)
+	if err := Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	// Mirrors strings.Split("--users a,,b,  ", ",") empty / whitespace slots.
+	if err := Bootstrap(db, "100001", "acct", []string{"cost-mgmt-operator", "", "  ", "\t"}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM principals pr
+		JOIN tenants t ON t.id = pr.tenant_id WHERE t.org_id='100001'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("principal count = %d err=%v, want 1", n, err)
+	}
+	var u string
+	if err := db.QueryRow(`SELECT pr.username FROM principals pr
+		JOIN tenants t ON t.id = pr.tenant_id WHERE t.org_id='100001'`).Scan(&u); err != nil || u != "cost-mgmt-operator" {
+		t.Fatalf("username = %q err=%v, want cost-mgmt-operator", u, err)
+	}
+}
+
+// TestBootstrapRequiresSeededSourcesAdministrator: bootstrap looks up the
+// public Sources administrator role; without Seed it must fail.
+func TestBootstrapRequiresSeededSourcesAdministrator(t *testing.T) {
 	db := testDB(t)
 	if err := Bootstrap(db, "100001", "acct", []string{"alice"}); err == nil {
 		t.Fatal("Bootstrap without Seed succeeded, want error")
+	}
+}
+
+func TestBootstrapErrorsOnClosedDB(t *testing.T) {
+	db := testDB(t)
+	_ = db.Close()
+	if err := Bootstrap(db, "100001", "acct", []string{"cost-mgmt-operator"}); err == nil {
+		t.Fatal("Bootstrap on closed DB succeeded, want error")
+	}
+}
+
+// TestBootstrapUpgradesLegacyUserType: re-bootstrap flips type=user to
+// service-account so sync prune cannot remove the CMMO principal.
+func TestBootstrapUpgradesLegacyUserType(t *testing.T) {
+	db := testDB(t)
+	if err := Seed(db); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := Bootstrap(db, "100001", "acct", nil); err != nil {
+		t.Fatalf("Bootstrap group: %v", err)
+	}
+	var tenantID int64
+	if err := db.QueryRow(`SELECT id FROM tenants WHERE org_id='100001'`).Scan(&tenantID); err != nil {
+		t.Fatalf("tenant: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO principals(uuid, username, type, tenant_id)
+		VALUES(?, 'cost-mgmt-operator', 'user', ?)`, store.NewUUID(), tenantID); err != nil {
+		t.Fatalf("insert legacy user: %v", err)
+	}
+	if err := Bootstrap(db, "100001", "acct", []string{"cost-mgmt-operator"}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	var ptype string
+	if err := db.QueryRow(`SELECT type FROM principals WHERE username='cost-mgmt-operator' AND tenant_id=?`,
+		tenantID).Scan(&ptype); err != nil || ptype != "service-account" {
+		t.Fatalf("type = %q err=%v, want service-account", ptype, err)
 	}
 }
 

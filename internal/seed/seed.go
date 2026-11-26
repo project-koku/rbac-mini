@@ -246,9 +246,15 @@ func seedRoleWithFlags(tx *store.Tx, tenantID int64, name, displayName, descript
 	return nil
 }
 
-// Bootstrap wires an org for on-prem use (mirrors operator
-// render_bootstrap_script): tenant + "CI Test Admin" group carrying the
-// seeded Cost Administrator role + one principal per username. Idempotent.
+// Bootstrap wires an org for on-prem CMMO / service-account use: tenant +
+// "CI Test Admin" group carrying the seeded Sources administrator role + one
+// principal per username. Principals are type=service-account so Keycloak
+// sync prune (which only deletes type=user) cannot remove them: gateway
+// usernames like cost-mgmt-operator are not Keycloak users. Idempotent; a
+// re-run removes any leftover Cost Administrator bind on this policy and
+// ensures Sources administrator is present (COST-8231). Other roles an admin
+// attached via the group roles API are left alone. Empty / whitespace-only
+// usernames are skipped.
 func Bootstrap(db *store.DB, orgID, accountID string, usernames []string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -268,7 +274,7 @@ func Bootstrap(db *store.DB, orgID, accountID string, usernames []string) error 
 	groupID, err := getOrCreate(tx,
 		`SELECT id FROM groups WHERE name='CI Test Admin' AND tenant_id=?`, []any{tenantID},
 		`INSERT INTO groups(uuid, name, description, system, created, modified, tenant_id)
-		 VALUES(?, 'CI Test Admin', 'CI service account admin access', 1, ?, ?, ?)
+		 VALUES(?, 'CI Test Admin', 'CMMO / service-account Sources access', 1, ?, ?, ?)
 		 ON CONFLICT(name, tenant_id) DO NOTHING`, store.NewUUID(), store.Now(), store.Now(), tenantID)
 	if err != nil {
 		return err
@@ -281,24 +287,43 @@ func Bootstrap(db *store.DB, orgID, accountID string, usernames []string) error 
 	if err != nil {
 		return err
 	}
-	var roleID int64
+	var sourcesRoleID, costAdminRoleID int64
 	if err := tx.QueryRow(`SELECT r.id FROM roles r
 		JOIN tenants t ON t.id = r.tenant_id
-		WHERE r.name='Cost Administrator' AND t.tenant_name='public'`).Scan(&roleID); err != nil {
+		WHERE r.name='Sources administrator' AND t.tenant_name='public'`).Scan(&sourcesRoleID); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`SELECT r.id FROM roles r
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE r.name='Cost Administrator' AND t.tenant_name='public'`).Scan(&costAdminRoleID); err != nil {
+		return err
+	}
+	// Strip leftover Cost Administrator from older bootstrap runs only; do
+	// not wipe other roles an admin may have attached via the API.
+	if _, err := tx.Exec(`DELETE FROM policy_roles WHERE policy_id=? AND role_id=?`,
+		policyID, costAdminRoleID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO policy_roles(policy_id, role_id)
-		VALUES(?, ?) ON CONFLICT(policy_id, role_id) DO NOTHING`, policyID, roleID); err != nil {
+		VALUES(?, ?) ON CONFLICT(policy_id, role_id) DO NOTHING`, policyID, sourcesRoleID); err != nil {
 		return err
 	}
 	for _, username := range usernames {
-		username = strings.ToLower(username)
-		principalID, err := getOrCreate(tx,
-			`SELECT id FROM principals WHERE username=? AND tenant_id=?`, []any{username, tenantID},
-			`INSERT INTO principals(uuid, username, type, tenant_id)
-			 VALUES(?, ?, 'user', ?) ON CONFLICT(username, tenant_id) DO NOTHING`,
-			store.NewUUID(), username, tenantID)
-		if err != nil {
+		username = strings.TrimSpace(strings.ToLower(username))
+		if username == "" {
+			continue
+		}
+		// ON CONFLICT upgrades legacy type=user rows so sync prune cannot
+		// delete gateway SA usernames after a re-bootstrap.
+		if _, err := tx.Exec(`INSERT INTO principals(uuid, username, type, tenant_id)
+			VALUES(?, ?, 'service-account', ?)
+			ON CONFLICT(username, tenant_id) DO UPDATE SET type='service-account'`,
+			store.NewUUID(), username, tenantID); err != nil {
+			return err
+		}
+		var principalID int64
+		if err := tx.QueryRow(`SELECT id FROM principals WHERE username=? AND tenant_id=?`,
+			username, tenantID).Scan(&principalID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO group_principals(group_id, principal_id)

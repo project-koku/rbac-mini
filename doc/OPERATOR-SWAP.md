@@ -128,6 +128,7 @@ binary/schema mismatch and implement the safest approach —
    [rbac-backend-go.md](https://github.com/project-koku/koku-service-operator/blob/main/docs/development/rbac-backend-go.md)).
 3. Gateway/IQE bootstrap uses
    `rbac-mini migrate && rbac-mini seed && rbac-mini bootstrap --org … --users …`.
-   Bootstrap binds **Sources administrator** only (not Cost Administrator) and
-   creates `type=service-account` principals so Keycloak sync prune cannot
-   remove gateway usernames such as `cost-mgmt-operator` ([COST-8231](https://redhat.atlassian.net/browse/COST-8231)).
+   Bootstrap ensures **Sources administrator**, strips leftover **Cost
+   Administrator**, and creates `type=service-account` principals so Keycloak
+   sync prune cannot remove gateway usernames such as `cost-mgmt-operator`
+   ([COST-8231](https://redhat.atlassian.net/browse/COST-8231)).

@@ -251,8 +251,10 @@ func seedRoleWithFlags(tx *store.Tx, tenantID int64, name, displayName, descript
 // principal per username. Principals are type=service-account so Keycloak
 // sync prune (which only deletes type=user) cannot remove them: gateway
 // usernames like cost-mgmt-operator are not Keycloak users. Idempotent; a
-// re-run replaces any prior Cost Administrator bind on this policy with
-// Sources administrator only (COST-8231 least-privilege).
+// re-run removes any leftover Cost Administrator bind on this policy and
+// ensures Sources administrator is present (COST-8231). Other roles an admin
+// attached via the group roles API are left alone. Empty / whitespace-only
+// usernames are skipped.
 func Bootstrap(db *store.DB, orgID, accountID string, usernames []string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -285,23 +287,32 @@ func Bootstrap(db *store.DB, orgID, accountID string, usernames []string) error 
 	if err != nil {
 		return err
 	}
-	var roleID int64
+	var sourcesRoleID, costAdminRoleID int64
 	if err := tx.QueryRow(`SELECT r.id FROM roles r
 		JOIN tenants t ON t.id = r.tenant_id
-		WHERE r.name='Sources administrator' AND t.tenant_name='public'`).Scan(&roleID); err != nil {
+		WHERE r.name='Sources administrator' AND t.tenant_name='public'`).Scan(&sourcesRoleID); err != nil {
 		return err
 	}
-	// Least-privilege: this group must not keep a leftover Cost Administrator
-	// bind from older bootstrap runs.
-	if _, err := tx.Exec(`DELETE FROM policy_roles WHERE policy_id=?`, policyID); err != nil {
+	if err := tx.QueryRow(`SELECT r.id FROM roles r
+		JOIN tenants t ON t.id = r.tenant_id
+		WHERE r.name='Cost Administrator' AND t.tenant_name='public'`).Scan(&costAdminRoleID); err != nil {
+		return err
+	}
+	// Strip leftover Cost Administrator from older bootstrap runs only; do
+	// not wipe other roles an admin may have attached via the API.
+	if _, err := tx.Exec(`DELETE FROM policy_roles WHERE policy_id=? AND role_id=?`,
+		policyID, costAdminRoleID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO policy_roles(policy_id, role_id)
-		VALUES(?, ?) ON CONFLICT(policy_id, role_id) DO NOTHING`, policyID, roleID); err != nil {
+		VALUES(?, ?) ON CONFLICT(policy_id, role_id) DO NOTHING`, policyID, sourcesRoleID); err != nil {
 		return err
 	}
 	for _, username := range usernames {
-		username = strings.ToLower(username)
+		username = strings.TrimSpace(strings.ToLower(username))
+		if username == "" {
+			continue
+		}
 		// ON CONFLICT upgrades legacy type=user rows so sync prune cannot
 		// delete gateway SA usernames after a re-bootstrap.
 		if _, err := tx.Exec(`INSERT INTO principals(uuid, username, type, tenant_id)

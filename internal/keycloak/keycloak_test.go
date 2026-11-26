@@ -526,7 +526,12 @@ func TestBootstrapServiceAccountSurvivesPrune(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	// stale-user as type=user stands in for a vanished human; SA must stay.
-	if _, err := db.Exec(`UPDATE principals SET type='user' WHERE username='stale-user'`); err != nil {
+	var tenantID int64
+	if err := db.QueryRow(`SELECT id FROM tenants WHERE org_id='100001'`).Scan(&tenantID); err != nil {
+		t.Fatalf("tenant: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE principals SET type='user' WHERE username='stale-user' AND tenant_id=?`,
+		tenantID); err != nil {
 		t.Fatalf("demote stale-user: %v", err)
 	}
 

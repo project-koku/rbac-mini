@@ -5,6 +5,7 @@
 # Test output
 *.test
 coverage.out
+coverage-full.out
 coverage.html
 
 # SQLite dev databases (keep schema/migrations, not data)
@@ -14,3 +15,6 @@ coverage.html
 *.sqlite-journal
 
 # Go build cache is outside the repo; nothing else needed.
+
+# Agent task folders (plans, QA reports, scratch notes) — never commit
+.cursor/

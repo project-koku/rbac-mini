@@ -110,6 +110,11 @@ Postgres URL (user/password are URL-encoded).
 **Resolution (2026-11-19):** Keep Django tables until after next-year GA so
 rollback to insights-rbac stays possible; no Jira for now.
 
+Mini and Django table sets are **disjoint** (Mini: `tenants`, `principals`,
+`groups`, `roles`, …; Django: `api_*` / `management_*`), so a backend flip in
+either direction never deletes or rewrites the other side's data (see
+[§7 "Data on rollback"](#data-on-rollback-backend-flip), COST-8621).
+
 ## 7. Upgrade / rollback note
 
 Tracked in [COST-8620](https://redhat.atlassian.net/browse/COST-8620).
@@ -161,6 +166,29 @@ so do not roll back to one and expect protection.
    `SchemaVersion` is at least the database's. This is the normal fix.
 2. **Restore the database** from a backup taken before the upgrade, then run
    the older operator image. Data written since the upgrade is lost.
+
+### Data on rollback (backend flip)
+
+Tracked in [COST-8621](https://redhat.atlassian.net/browse/COST-8621).
+Decision (2026-11-27): no coexistence mechanism; rollback is non-destructive
+by construction.
+
+* Mini and insights-rbac use separate table sets in the same
+  `costonprem_rbac` database ([§6](#6-database)). Neither backend's
+  migrate/seed/sync can address the other's tables, so Django's
+  `manage.py seeds` cannot prune Mini rows. Mini code has no
+  `DROP TABLE` / `TRUNCATE`; its seeds are idempotent upserts.
+* Rolling back to `backend: django` makes Django serve **its own** tables,
+  frozen at their pre-flip state. Mini-era groups/policies are invisible
+  there (not deleted), and `/access/` reflects Django-era defaults.
+* Changes made while on Mini stay in Mini's tables and reappear on the next
+  flip to `backend: go`. Re-running bootstrap is not needed after a
+  rollback; it only matters when Mini tables are fresh (new cluster/DB).
+* **Beta limitation:** Django-era custom RBAC config (custom groups, roles,
+  assignments) does not carry into Mini. Mini starts from seeded defaults +
+  Keycloak-synced principals. Org admins are unaffected (admin defaults are
+  seeded on both sides); non-admin users whose access came from custom Django
+  groups need that config re-created while on Mini.
 
 ## 8. Verification
 

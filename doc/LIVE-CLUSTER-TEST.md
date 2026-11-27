@@ -108,16 +108,26 @@ oc -n cost-byoi rollout status deployment/<cr>-rbac-api
 
 Verified live 2026-11-06 (both directions). Caveats found while testing:
 
-* Django's `manage.py seeds` (run by the rollback migration Job) **prunes
-  Go-created groups/policies** (e.g. the test `CI Test Admin` group vanished;
-  tenant + principals survive) and re-seeds its own platform roles. After a
-  rollback to Django, **re-run bootstrap** (or the e2e fixtures) to restore
-  custom group wiring. Live symptom: Django `/access/` returned
-  `aws.account:*` + `openshift.cluster:*` (public Default-access viewers)
-  instead of the Go-seeded `cost-management:*:*`.
-  **Resolution (2026-11-19):** Not accepted as docs-only — safer coexistence
-  so Mini-created groups/policies survive Django rollback is tracked in
+* After rollback, Mini-era groups/policies (e.g. the test `CI Test Admin`
+  group) are **invisible, not deleted**. Mini and Django use disjoint table
+  sets in the same `costonprem_rbac` database (Mini: `groups`, `policies`,
+  `roles`, …; Django: `management_*` / `api_*`), so neither side's
+  migrate/seed/sync can touch the other's rows. Django's `manage.py seeds`
+  (run by the rollback migration Job) only re-seeds its own tables, and its
+  role/permission prune is date-gated off by default. Rollback serves
+  Django's own frozen pre-flip state; Mini's tables stay intact (re-flipping
+  forward on 2026-11-07 found the Mini-era state unchanged). Live symptom:
+  Django `/access/` returned `aws.account:*` + `openshift.cluster:*` (public
+  Default-access viewers) instead of the Go-seeded `cost-management:*:*` —
+  Django-era defaults, not data loss. **Re-running bootstrap is not needed**
+  to recover from a rollback; it only matters when Mini tables are fresh
+  (new cluster/DB). Django-era custom groups/roles do not carry into Mini
+  (see [OPERATOR-SWAP §7](OPERATOR-SWAP.md#7-upgrade--rollback-note)).
+  **Resolution (2026-11-19):** Not accepted as docs-only — tracked in
   [COST-8621](https://redhat.atlassian.net/browse/COST-8621).
+  **Resolution (2026-11-27):** COST-8621 root-caused as non-destructive
+  divergence (the earlier "seeds prunes Go-created groups/policies" reading
+  was a misdiagnosis). Decision: no coexistence code; docs corrected.
 * That same test exposed a real Go parity gap (fixed in rbac-mini):
   Django auto-includes the **public** tenant's platform-default groups in
   every `/access/` call, plus admin_default groups for org admins.

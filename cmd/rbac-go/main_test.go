@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"rbac-go/internal/store"
@@ -406,5 +408,46 @@ func TestMaybeFIPSStatus(t *testing.T) {
 	}
 	if handled {
 		t.Fatal("serve must not be treated as fips-status")
+	}
+}
+
+// TestServeRefusesNewerSchema: after an operator image rollback the older
+// binary must fail serve before binding any listener, not run against a newer
+// schema.
+func TestServeRefusesNewerSchema(t *testing.T) {
+	dsn := "sqlite://" + filepath.Join(t.TempDir(), "rbac.db")
+	db, err := openDatabase(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create schema_version: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, store.SchemaVersion+1); err != nil {
+		t.Fatalf("stamp newer: %v", err)
+	}
+	_ = db.Close()
+
+	// Hold the port: if serve reached net.Listen it would fail with "address in
+	// use" instead of the schema error, and a bound listener would be leaked.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	addr, stop, err := startServer(dsn, ln.Addr().String())
+	if err == nil {
+		stop()
+		t.Fatalf("startServer succeeded on %s, want schema refusal", addr)
+	}
+	if !strings.Contains(err.Error(), "newer") {
+		t.Errorf("error = %v, want it to mention a newer schema (not a listen error)", err)
+	}
+	if stop != nil {
+		t.Error("stop func returned on refusal, want nil (no listener bound)")
+	}
+	if err := run([]string{"migrate"}, dsn); err == nil || !strings.Contains(err.Error(), "newer") {
+		t.Errorf("migrate: err = %v, want newer-schema refusal", err)
 	}
 }

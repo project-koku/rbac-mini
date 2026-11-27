@@ -142,7 +142,7 @@ roles and user-detail role rows.
 * `metrics/` → Prometheus exposition (at minimum `up`, request counters by
   `url_name`; keep label names stable for `dashboards/`).
 
-## 3. Data Model (10 tables) — SQLite + Postgres portable
+## 3. Data Model (11 tables) — SQLite + Postgres portable
 
 Fresh schema, no Django tables. One migration chain applied to both engines
 (`golang-migrate` or `goose` with per-dialect files kept identical in effect).
@@ -181,6 +181,7 @@ Portable type rules (no PG-only DDL):
 | `permissions` | `id INTEGER PK, application TEXT, resource_type TEXT, verb TEXT, permission TEXT UNIQUE, tenant_id INTEGER FK` |
 | `access` | `id INTEGER PK, role_id INTEGER FK, permission_id INTEGER FK, tenant_id INTEGER FK` |
 | `resource_definitions` | `id INTEGER PK, access_id INTEGER FK, attribute_filter TEXT (JSON), tenant_id INTEGER FK` |
+| `schema_version` | `id INTEGER PK, version INTEGER` — single row stamped by `store.Migrate` with `store.SchemaVersion`; an older binary refuses to run against a newer stamp (forward-only, [OPERATOR-SWAP §7](OPERATOR-SWAP.md#7-upgrade--rollback-note)). Not tenant data. |
 
 Indexes: all `tenant_id` FKs, `permissions(application)`, `principals(username, tenant_id)`.
 

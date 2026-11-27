@@ -128,8 +128,10 @@ Tracked in [COST-8620](https://redhat.atlassian.net/browse/COST-8620).
   open a newer schema and "work" until it silently misbehaved.
 
 **Recommendation: forward-only.** The DB schema only moves forward; there are
-no down-migrations and no expand/contract framework. An older binary refuses
-to run against a newer schema instead of guessing.
+no down-migrations and no expand/contract framework. An older binary that
+includes the guard refuses to run against a newer schema instead of guessing;
+images released before schema versioning have no such check (see Findings),
+so do not roll back to one and expect protection.
 
 **Guard behavior**
 
@@ -138,12 +140,17 @@ to run against a newer schema instead of guessing.
   change). Stamping is idempotent.
 * Before applying any DDL, `Migrate` reads the stamp. If it is **newer** than
   the binary's `SchemaVersion`, it returns an error and changes nothing (the
-  stamp is never rewritten by a refused run).
+  stamp is never rewritten by a refused run). The stamp itself is monotonic:
+  it never lowers a version, and a run that finds a newer stamp after
+  migrating fails rather than reporting success.
 * Every entry point (`serve`, `migrate`, `seed`, `bootstrap`, `sync`) goes
-  through `prepareDB` → `Migrate`, so after an operator image rollback the
-  migrate Job fails and `serve` crash-loops with
-  `database schema version N is newer than this binary (M): the operator
-  image was rolled back — …`. That is intended: loud, not silent.
+  through `prepareDB` → `Migrate`, so after an operator image rollback to an
+  image that includes this guard, the migrate Job fails and `serve`
+  crash-loops with `database schema version N is newer than this binary (M):
+  the operator image was rolled back — …`. That is intended: loud, not
+  silent. The refusal applies only when the rollback target contains this
+  check; images released before schema versioning run an unversioned
+  `Migrate()` and do not refuse.
 * A database created before versioning has no stamp row (version 0): it
   migrates forward and is stamped.
 * There is deliberately **no bypass flag or env var**.

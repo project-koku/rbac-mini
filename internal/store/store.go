@@ -285,7 +285,10 @@ func checkSchemaVersion(db *DB) error {
 }
 
 // stampSchemaVersion records SchemaVersion. Portable read-then-write: no
-// upsert syntax, and the id is auto-assigned on both dialects.
+// upsert syntax, and the id is auto-assigned on both dialects. The UPDATE is
+// monotonic (never lowers a stamp), and the stored version is re-checked
+// afterwards: if a newer binary stamped while this one was migrating, this
+// run fails instead of reporting success.
 func stampSchemaVersion(db *DB) error {
 	var rows int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&rows); err != nil {
@@ -295,12 +298,12 @@ func stampSchemaVersion(db *DB) error {
 	if rows == 0 {
 		_, err = db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, SchemaVersion)
 	} else {
-		_, err = db.Exec(`UPDATE schema_version SET version = ?`, SchemaVersion)
+		_, err = db.Exec(`UPDATE schema_version SET version = ? WHERE version <= ?`, SchemaVersion, SchemaVersion)
 	}
 	if err != nil {
 		return fmt.Errorf("stamp schema_version: %w", err)
 	}
-	return nil
+	return checkSchemaVersion(db)
 }
 
 // Migrate applies the portable schema and stamps SchemaVersion. Idempotent at

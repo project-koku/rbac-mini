@@ -14,23 +14,7 @@ import (
 func TestMigrateSchemaVersionGuard(t *testing.T) {
 	db := testdb.Open(t) // already migrated once
 
-	read := func() []int {
-		t.Helper()
-		rows, err := db.Query(`SELECT version FROM schema_version ORDER BY id`)
-		if err != nil {
-			t.Fatalf("select schema_version: %v", err)
-		}
-		defer func() { _ = rows.Close() }()
-		var out []int
-		for rows.Next() {
-			var v int
-			if err := rows.Scan(&v); err != nil {
-				t.Fatal(err)
-			}
-			out = append(out, v)
-		}
-		return out
-	}
+	read := func() []int { return storedVersions(t, db) }
 
 	if got := read(); len(got) != 1 || got[0] != store.SchemaVersion {
 		t.Fatalf("stamp = %v, want [%d]", got, store.SchemaVersion)
@@ -69,6 +53,9 @@ func storedVersions(t *testing.T, db *store.DB) []int {
 		}
 		out = append(out, v)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate schema_version: %v", err)
+	}
 	return out
 }
 
@@ -102,7 +89,11 @@ func TestStampRaisesOlderVersion(t *testing.T) {
 	if err := store.StampSchemaVersion(db); err != nil {
 		t.Fatalf("stamp: %v", err)
 	}
-	for i, v := range storedVersions(t, db) {
+	got := storedVersions(t, db)
+	if len(got) != 2 {
+		t.Fatalf("schema_version rows = %v, want exactly 2 (stamp must not delete rows)", got)
+	}
+	for i, v := range got {
 		if v != store.SchemaVersion {
 			t.Errorf("row %d version = %d, want %d", i, v, store.SchemaVersion)
 		}
